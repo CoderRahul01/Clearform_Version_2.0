@@ -102,9 +102,18 @@ const LeftPanel = memo(() => {
         />
       </div>
 
-      {/* Tagline */}
-      <p className="absolute left-10 bottom-14 text-[52px] font-bold text-white leading-[60px] tracking-[-2px] w-[380px] z-10 select-none">
-        Forms built for Clarity, Not just Collection.
+      {/* Tagline — words slide in from the left one by one */}
+      <p className="absolute left-10 bottom-14 text-[52px] font-bold text-white leading-[60px] tracking-[-2px] w-[380px] z-10 select-none flex flex-wrap gap-x-[14px] gap-y-0">
+        {['Forms', 'built', 'for', 'Clarity,', 'Not', 'just', 'Collection.'].map((word, i) => (
+          <motion.span
+            key={word}
+            initial={{ opacity: 0, x: -32 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.45, ease: [0.25, 0.1, 0.25, 1], delay: 0.15 + i * 0.08 }}
+          >
+            {word}
+          </motion.span>
+        ))}
       </p>
     </div>
   );
@@ -112,7 +121,7 @@ const LeftPanel = memo(() => {
 
 /* ─── Main page ─────────────────────────────────────────────────────────── */
 
-const OnboardingPage = () => {
+const SignupPage = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { firstName, lastName, email, password, isSubmitting } = useSelector(
@@ -228,7 +237,7 @@ const OnboardingPage = () => {
 
               <button
                 type="button"
-                onClick={() => navigate('/dashboard')}
+                onClick={() => navigate('/signin')}
                 className="w-full h-[46px] border border-[rgba(0,0,0,0.2)] text-[#737373] text-[15px] font-normal rounded-[12px] flex items-center justify-center cursor-pointer hover:bg-[rgba(0,0,0,0.02)] active:scale-[0.99] transition-all duration-150"
               >
                 Already have an account? Log in
@@ -256,4 +265,4 @@ const OnboardingPage = () => {
   );
 };
 
-export default OnboardingPage;
+export default SignupPage;
