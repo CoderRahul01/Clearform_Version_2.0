@@ -15,6 +15,7 @@ import TemplateBanner from '../components/ui/TemplateBanner';
 import FormCard from '../components/ui/FormCard';
 import FormListRow from '../components/ui/FormListRow';
 import { SkeletonGrid, SkeletonList } from '../components/ui/SkeletonCard';
+import Topbar from '../components/common/Topbar';
 import FormContextMenu from '../components/ui/FormContextMenu';
 import DeleteFormModal from '../components/ui/DeleteFormModal';
 import DuplicateFormModal from '../components/ui/DuplicateFormModal';
@@ -158,7 +159,8 @@ const AllFormsPage = () => {
       <FormOverlayModal />
       <CreateWorkspaceModal />
       <ShareFormModal />
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col h-full overflow-hidden">
+        <Topbar />
         {/* Page heading + CTA */}
         <div className="flex items-end justify-between px-6 py-4">
           <div>

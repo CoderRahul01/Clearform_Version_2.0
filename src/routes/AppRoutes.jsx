@@ -3,6 +3,7 @@ import MainLayout from '../layouts/MainLayout';
 import SignupPage from '../pages/SignupPage';
 import SignInPage from '../pages/SignInPage';
 import AllFormsPage from '../pages/AllFormsPage';
+import TemplatesPage from '../pages/TemplatesPage';
 
 const AppRoutes = () => {
   return (
@@ -16,6 +17,7 @@ const AppRoutes = () => {
       {/* App dashboard */}
       <Route path="/dashboard" element={<MainLayout />}>
         <Route index element={<AllFormsPage />} />
+        <Route path="templates" element={<TemplatesPage />} />
       </Route>
     </Routes>
   );
