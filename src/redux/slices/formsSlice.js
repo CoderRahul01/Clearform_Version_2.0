@@ -1,6 +1,16 @@
 import { createSlice } from '@reduxjs/toolkit';
 import { FORMS_DATA, NAV_WORKSPACES } from '../../constants';
 
+// Convert a "Xm/Xh/Xd/Xw ago" string to milliseconds so we can sort by recency
+function timeAgoToMs(timeAgo) {
+  if (!timeAgo) return 0;
+  const m = timeAgo.match(/^(\d+)([mhdw])/);
+  if (!m) return 0;
+  const n = parseInt(m[1]);
+  const multipliers = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  return n * (multipliers[m[2]] ?? 0);
+}
+
 const initialState = {
   forms: FORMS_DATA,
   workspaces: NAV_WORKSPACES,
@@ -8,8 +18,9 @@ const initialState = {
   activeWorkspace: 'all',
   searchQuery: '',
   showTemplateBanner: true,
-  viewMode: 'grid', // 'grid' | 'list'
-  isLoading: true,  // simulates initial data fetch
+  viewMode: 'grid',    // 'grid' | 'list'
+  sortOrder: 'recent', // 'recent' | 'oldest' | 'most_responses' | 'fewest_responses' | 'name_az' | 'name_za'
+  isLoading: true,     // simulates initial data fetch
 };
 
 const formsSlice = createSlice({
@@ -30,6 +41,9 @@ const formsSlice = createSlice({
     },
     setViewMode(state, action) {
       state.viewMode = action.payload;
+    },
+    setSortOrder(state, action) {
+      state.sortOrder = action.payload;
     },
     setLoading(state, action) {
       state.isLoading = action.payload;
@@ -85,6 +99,7 @@ export const {
   setSearchQuery,
   dismissTemplateBanner,
   setViewMode,
+  setSortOrder,
   setLoading,
   addForm,
   setFormPause,
@@ -98,8 +113,9 @@ export const {
 } = formsSlice.actions;
 
 export const selectFilteredForms = (state) => {
-  const { forms, activeFilter, activeWorkspace, searchQuery } = state.forms;
-  return forms.filter((form) => {
+  const { forms, activeFilter, activeWorkspace, searchQuery, sortOrder } = state.forms;
+
+  const filtered = forms.filter((form) => {
     const matchesFilter = activeFilter === 'archived'
       ? form.status === 'archived'
       : (activeFilter === 'all' || form.status === activeFilter) && form.status !== 'archived';
@@ -109,6 +125,24 @@ export const selectFilteredForms = (state) => {
       !searchQuery ||
       form.title.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesFilter && matchesWorkspace && matchesSearch;
+  });
+
+  return [...filtered].sort((a, b) => {
+    switch (sortOrder) {
+      case 'oldest':
+        return timeAgoToMs(a.timeAgo) - timeAgoToMs(b.timeAgo);
+      case 'most_responses':
+        return b.responses - a.responses;
+      case 'fewest_responses':
+        return a.responses - b.responses;
+      case 'name_az':
+        return a.title.localeCompare(b.title);
+      case 'name_za':
+        return b.title.localeCompare(a.title);
+      case 'recent':
+      default:
+        return timeAgoToMs(a.timeAgo) - timeAgoToMs(b.timeAgo);
+    }
   });
 };
 

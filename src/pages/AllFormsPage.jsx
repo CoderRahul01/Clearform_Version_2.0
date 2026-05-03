@@ -200,7 +200,7 @@ const AllFormsPage = () => {
         </div>
 
         {/* Template banner */}
-        <TemplateBanner visible={showTemplateBanner} />
+        <TemplateBanner visible={showTemplateBanner} isLoading={isLoading} />
 
         {/* Filter tabs + controls */}
         <FilterTabs />

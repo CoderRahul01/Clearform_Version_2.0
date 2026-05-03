@@ -1,15 +1,49 @@
+import { useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { RiFilter3Line, RiTimeLine, RiLayoutGridLine, RiMenuLine, RiSettings3Line } from 'react-icons/ri';
-import { setActiveFilter, setViewMode } from '../../redux/slices/formsSlice';
+import { RiFilter3Line, RiTimeLine, RiLayoutGridLine, RiMenuLine, RiSettings3Line, RiCheckLine, RiArrowUpDownLine } from 'react-icons/ri';
+import { setActiveFilter, setViewMode, setSortOrder } from '../../redux/slices/formsSlice';
 import { openWorkspaceContextMenu } from '../../redux/slices/uiSlice';
 import { FILTER_TABS } from '../../constants';
+
+const SORT_OPTIONS = [
+  { id: 'recent',           label: 'Recent',           icon: RiTimeLine },
+  { id: 'oldest',           label: 'Oldest',           icon: RiTimeLine },
+  { id: 'most_responses',   label: 'Most responses',   icon: RiArrowUpDownLine },
+  { id: 'fewest_responses', label: 'Fewest responses', icon: RiArrowUpDownLine },
+  { id: 'name_az',          label: 'Name A → Z',       icon: RiArrowUpDownLine },
+  { id: 'name_za',          label: 'Name Z → A',       icon: RiArrowUpDownLine },
+];
 
 const shimmer = 'relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.6),transparent)]';
 const Sk = ({ className }) => <div className={`bg-[#ece9e3] ${shimmer} ${className}`} />;
 
 const FilterTabs = () => {
   const dispatch = useDispatch();
-  const { activeFilter, viewMode, isLoading, activeWorkspace } = useSelector((state) => state.forms);
+  const { activeFilter, viewMode, isLoading, activeWorkspace, sortOrder } = useSelector((state) => state.forms);
+
+  const [sortOpen, setSortOpen] = useState(false);
+  const sortBtnRef = useRef(null);
+  const sortMenuRef = useRef(null);
+
+  const activeSortLabel = SORT_OPTIONS.find((o) => o.id === sortOrder)?.label ?? 'Recent';
+
+  // Close dropdown when clicking outside
+  const handleSortButtonClick = () => setSortOpen((v) => !v);
+
+  const handleSortSelect = (id) => {
+    dispatch(setSortOrder(id));
+    setSortOpen(false);
+  };
+
+  // Close on outside click
+  const handleBlur = (e) => {
+    if (
+      !sortBtnRef.current?.contains(e.relatedTarget) &&
+      !sortMenuRef.current?.contains(e.relatedTarget)
+    ) {
+      setSortOpen(false);
+    }
+  };
 
   const handleSettingsClick = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -68,12 +102,42 @@ const FilterTabs = () => {
           </span>
         </button>
 
-        <button className="flex items-center gap-1 bg-white border border-[#e5e3dc] rounded-lg px-[13px] py-[7px] hover:bg-[#f4f3ef] transition-colors cursor-pointer">
-          <RiTimeLine size={13} className="text-[#6b6966]" />
-          <span className="text-[12px] font-medium text-[#6b6966] leading-normal">
-            Sort: Recent
-          </span>
-        </button>
+        {/* Sort dropdown */}
+        <div className="relative" onBlur={handleBlur}>
+          <button
+            ref={sortBtnRef}
+            onClick={handleSortButtonClick}
+            className={`flex items-center gap-1 bg-white border rounded-lg px-[13px] py-[7px] transition-colors cursor-pointer ${
+              sortOpen ? 'border-[#7c3aed] ring-1 ring-[#7c3aed]/30' : 'border-[#e5e3dc] hover:bg-[#f4f3ef]'
+            }`}
+          >
+            <RiTimeLine size={13} className="text-[#6b6966]" />
+            <span className="text-[12px] font-medium text-[#6b6966] leading-normal">
+              Sort: {activeSortLabel}
+            </span>
+          </button>
+
+          {sortOpen && (
+            <div
+              ref={sortMenuRef}
+              tabIndex={-1}
+              className="absolute right-0 top-[calc(100%+6px)] z-50 bg-white border border-[#e5e3dc] rounded-[10px] shadow-[0_8px_24px_rgba(0,0,0,0.12)] py-[5px] min-w-[180px] outline-none"
+            >
+              {SORT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => handleSortSelect(opt.id)}
+                  className="w-full flex items-center justify-between gap-2 px-[13px] py-[8px] text-[12.5px] font-medium text-[#1a1a1c] hover:bg-[#f4f3ef] transition-colors cursor-pointer text-left"
+                >
+                  <span>{opt.label}</span>
+                  {sortOrder === opt.id && (
+                    <RiCheckLine size={13} className="text-[#7c3aed] shrink-0" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* View toggle */}
         <div className="flex items-start border border-[#e5e3dc] rounded-lg overflow-hidden p-px">

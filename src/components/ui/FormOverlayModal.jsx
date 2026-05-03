@@ -125,10 +125,10 @@ const ProgressRing = ({ pct }) => {
   const offset = circ - (pct / 100) * circ;
   return (
     <svg width="56" height="56" className="-rotate-90">
-      <circle cx="28" cy="28" r={r} strokeWidth="6" stroke="#e8e6e0" fill="none" />
+      <circle cx="28" cy="28" r={r} strokeWidth="8" stroke="#e8e6e0" fill="none" />
       <circle
         cx="28" cy="28" r={r}
-        strokeWidth="6" stroke="#7c3aed" fill="none"
+        strokeWidth="8" stroke="#7c3aed" fill="none"
         strokeLinecap="round"
         strokeDasharray={circ}
         strokeDashoffset={offset}
@@ -199,6 +199,7 @@ const FormOverlayModal = () => {
   const [selectedPause, setSelectedPause]     = useState(null);
   const [notificationsOn, setNotificationsOn] = useState(false);
   const [fetchError, setFetchError]           = useState(false);
+  const [aiInsightDismissed, setAiInsightDismissed] = useState(false);
   // date-time picker state (local only — persisted to Redux on confirm)
   const [viewYear, setViewYear]   = useState(2026);
   const [viewMonth, setViewMonth] = useState(4);   // 0-indexed; 4 = May
@@ -236,6 +237,7 @@ const FormOverlayModal = () => {
     setResponseLimit(String(form?.responseLimit ?? 500));
     setSelectedPause(null);
     setNotificationsOn(false);
+    setAiInsightDismissed(false);
 
     // Restore picker to saved pause date if one exists, otherwise reset defaults
     const saved = form?.pauseSettings;
@@ -683,8 +685,8 @@ const FormOverlayModal = () => {
 
                 </div>
 
-                {/* AI insight — hidden when paused, archived, or fetch error */}
-                {!confirmedPause && form.status !== 'archived' && !fetchError && (
+                {/* AI insight — hidden when paused, archived, fetch error, or dismissed */}
+                {!confirmedPause && form.status !== 'archived' && !fetchError && !aiInsightDismissed && (
                   <div className="bg-[#f5f3ff] border border-[#e0daff] rounded-[12px] p-[13px] flex flex-col gap-[10px] w-full">
                     <p className="text-[12.1px] font-normal text-[#374151] leading-[20.8px]">
                       <span className="font-bold">✦ </span>
@@ -695,7 +697,10 @@ const FormOverlayModal = () => {
                         <RiSparklingLine size={12} />
                         Improve with AI
                       </button>
-                      <button className="bg-white text-[12px] font-medium text-[#1a1a1c] px-4 py-[7px] rounded-[8px] border border-[#e5e3dc] hover:bg-[#f4f3ef] transition-colors cursor-pointer">
+                      <button
+                        onClick={() => setAiInsightDismissed(true)}
+                        className="bg-white text-[12px] font-medium text-[#1a1a1c] px-4 py-[7px] rounded-[8px] border border-[#e5e3dc] hover:bg-[#f4f3ef] transition-colors cursor-pointer"
+                      >
                         Dismiss
                       </button>
                     </div>

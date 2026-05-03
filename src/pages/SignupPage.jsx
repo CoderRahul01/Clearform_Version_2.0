@@ -5,7 +5,7 @@ import { motion } from 'motion/react';
 import { FcGoogle } from 'react-icons/fc';
 import { RiGlobalLine, RiArrowDownSLine, RiAppleFill, RiEyeLine, RiEyeOffLine } from 'react-icons/ri';
 import { setField, setSubmitting, setAuthenticated } from '../redux/slices/authSlice';
-import clearformLogo from '../assets/clearform-high-resolution-logo-transparent.png';
+import clearformLogoWhite from '../assets/clearform-logo-white.svg';
 import bgImage from '../assets/onboarding-bg.jpg';
 
 /* ─── Static sub-components (memo prevents re-renders on form typing) ─── */
@@ -91,16 +91,14 @@ const LeftPanel = memo(() => {
         <div className="absolute inset-0 bg-black/30" />
       </div>
 
-      {/* Logo badge */}
-      <div className="absolute left-8 top-8 bg-white rounded-[10px] px-4 py-[10px] flex items-center z-10 shadow-sm">
-        <img
-          src={clearformLogo}
-          alt="Clearform"
-          width="110"
-          height="28"
-          className="h-[28px] w-auto object-contain"
-        />
-      </div>
+      {/* Logo */}
+      <img
+        src={clearformLogoWhite}
+        alt="Clearform"
+        width="125"
+        height="35"
+        className="absolute left-8 top-8 w-[125px] h-[35px] object-contain z-10"
+      />
 
       {/* Tagline — words slide in from the left one by one */}
       <p className="absolute left-10 bottom-14 text-[52px] font-bold text-white leading-[60px] tracking-[-2px] w-[380px] z-10 select-none flex flex-wrap gap-x-[14px] gap-y-0">
