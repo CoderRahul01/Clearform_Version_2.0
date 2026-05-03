@@ -54,6 +54,9 @@ const initialState = {
     workspaceId: null,
     workspaceName: '',
   },
+  notificationCenter: {
+    open: false,
+  },
 };
 
 const uiSlice = createSlice({
@@ -140,6 +143,12 @@ const uiSlice = createSlice({
     closeDeleteWorkspaceModal(state) {
       state.deleteWorkspaceModal = { open: false, workspaceId: null, workspaceName: '' };
     },
+    toggleNotificationCenter(state) {
+      state.notificationCenter.open = !state.notificationCenter.open;
+    },
+    closeNotificationCenter(state) {
+      state.notificationCenter.open = false;
+    },
   },
 });
 
@@ -166,6 +175,8 @@ export const {
   closeRenameWorkspaceModal,
   openDeleteWorkspaceModal,
   closeDeleteWorkspaceModal,
+  toggleNotificationCenter,
+  closeNotificationCenter,
 } = uiSlice.actions;
 
 export default uiSlice.reducer;

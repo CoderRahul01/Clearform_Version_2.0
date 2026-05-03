@@ -113,7 +113,7 @@ const StatCard = ({ label, value, sub, subNeutral, note }) => (
     )}
     <div className="h-px bg-[#e8e6e0] w-full my-[2px]" />
     {note && (
-      <p className="text-[10px] font-normal text-[#5b21b6] leading-normal">✦ {note}</p>
+      <p className="text-[10px] font-normal text-[#5b21b6] leading-normal">{note}</p>
     )}
   </div>
 );
@@ -124,7 +124,7 @@ const ProgressRing = ({ pct }) => {
   const circ = 2 * Math.PI * r;
   const offset = circ - (pct / 100) * circ;
   return (
-    <svg width="56" height="56" className="-rotate-90">
+    <svg width="56" height="56" className="block -rotate-90">
       <circle cx="28" cy="28" r={r} strokeWidth="8" stroke="#e8e6e0" fill="none" />
       <circle
         cx="28" cy="28" r={r}
@@ -651,9 +651,9 @@ const FormOverlayModal = () => {
                           {form.responses} of 500 filled
                         </p>
                       </div>
-                      <div className="relative shrink-0">
+                      <div className="relative w-[56px] h-[56px] shrink-0">
                         <ProgressRing pct={completionPct} />
-                        <span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-[#1a1814]">
+                        <span className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold leading-none tabular-nums text-[#1a1814]">
                           {completionPct}%
                         </span>
                       </div>
@@ -689,7 +689,6 @@ const FormOverlayModal = () => {
                 {!confirmedPause && form.status !== 'archived' && !fetchError && !aiInsightDismissed && (
                   <div className="bg-[#f5f3ff] border border-[#e0daff] rounded-[12px] p-[13px] flex flex-col gap-[10px] w-full">
                     <p className="text-[12.1px] font-normal text-[#374151] leading-[20.8px]">
-                      <span className="font-bold">✦ </span>
                       Sentiment positive, completion above benchmark — but Step 3 is losing 28% of respondents. Improve it to gain ~30 more completions.
                     </p>
                     <div className="flex items-center gap-[8px]">

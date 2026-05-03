@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { motion, AnimatePresence } from 'motion/react';
 import { RiAddLine, RiLayoutGridLine } from 'react-icons/ri';
@@ -27,6 +27,8 @@ import ShareFormModal from '../components/ui/ShareFormModal';
 import WorkspaceContextMenu from '../components/ui/WorkspaceContextMenu';
 import RenameWorkspaceModal from '../components/ui/RenameWorkspaceModal';
 import DeleteWorkspaceModal from '../components/ui/DeleteWorkspaceModal';
+import NotificationCenter from '../components/ui/NotificationCenter';
+import { useToast } from '../hooks/useToast';
 
 /* ── Empty state: no forms from filter ── */
 const FilterEmptyState = ({ hasFilters, onClearFilters }) => (
@@ -104,6 +106,8 @@ const GridView = ({ forms }) => (
 /* ── Page ── */
 const AllFormsPage = () => {
   const dispatch = useDispatch();
+  const { showToast } = useToast();
+  const shownTargetToastIdsRef = useRef(new Set());
   const filteredForms = useSelector(selectFilteredForms);
   const {
     showTemplateBanner,
@@ -130,6 +134,26 @@ const AllFormsPage = () => {
     const t = setTimeout(() => dispatch(setLoading(false)), 1200);
     return () => clearTimeout(t);
   }, [dispatch]);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const reachedForm = allForms.find(
+      (form) =>
+        !!form.responseLimit
+        && form.responses >= form.responseLimit
+        && !shownTargetToastIdsRef.current.has(form.id)
+    );
+
+    if (!reachedForm) return;
+
+    shownTargetToastIdsRef.current.add(reachedForm.id);
+    showToast({
+      type: 'success',
+      message: `${reachedForm.title} - Response target achieved`,
+      duration: 5000,
+    });
+  }, [allForms, isLoading, showToast]);
 
   /* Global ⌘K listener */
   useEffect(() => {
@@ -165,7 +189,8 @@ const AllFormsPage = () => {
       <WorkspaceContextMenu />
       <RenameWorkspaceModal />
       <DeleteWorkspaceModal />
-      <div className="flex flex-col h-full overflow-hidden">
+      <NotificationCenter />
+      <div className="flex flex-col h-full overflow-hidden relative">
         <Topbar />
         {/* Page heading + CTA */}
         <div className="flex items-end justify-between px-6 py-4">

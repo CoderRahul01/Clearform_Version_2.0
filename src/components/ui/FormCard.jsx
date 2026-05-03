@@ -4,7 +4,15 @@ import { RiFileTextLine } from 'react-icons/ri';
 import { openContextMenu, openFormOverlay } from '../../redux/slices/uiSlice';
 import { formatResponseCount } from '../../constants';
 
-const StatusBadge = ({ status }) => {
+const StatusBadge = ({ status, isTargetReached }) => {
+  if (isTargetReached) {
+    return (
+      <span className="absolute top-2 right-2 px-[7px] py-[2px] rounded-[10px] text-[10px] font-medium tracking-[0.2px] leading-[15px] bg-[#efe9ff] text-[#6d47c6] border border-[#d9cdfc]">
+        Target reached
+      </span>
+    );
+  }
+
   const isLive = status === 'live';
   return (
     <span
@@ -30,6 +38,7 @@ const ThumbnailLines = ({ overlayColor }) => (
 
 const FormCard = ({ form }) => {
   const dispatch = useDispatch();
+  const isTargetReached = !!form.responseLimit && form.responses >= form.responseLimit;
 
   const handleMoreClick = (e) => {
     e.stopPropagation();
@@ -52,7 +61,7 @@ const FormCard = ({ form }) => {
         style={{ background: `linear-gradient(140deg, ${form.gradientFrom} 0%, ${form.gradientTo} 100%)` }}
       >
         <ThumbnailLines overlayColor={form.overlayColor} />
-        <StatusBadge status={form.status} />
+        <StatusBadge status={form.status} isTargetReached={isTargetReached} />
       </div>
 
       {/* Card body */}
@@ -71,13 +80,15 @@ const FormCard = ({ form }) => {
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1">
-            <RiFileTextLine size={11} className="text-[#646464]" />
+            <RiFileTextLine size={11} className={isTargetReached ? 'text-[#6d47c6]' : 'text-[#646464]'} />
             <span className="text-[11px] font-normal text-[#646464] leading-[16.5px]">
-              {formatResponseCount(form.responses)} {form.responses === 1 ? 'response' : 'responses'}
+              {isTargetReached
+                ? `🎉 ${formatResponseCount(form.responses)}/${formatResponseCount(form.responseLimit)} responses`
+                : `${formatResponseCount(form.responses)} ${form.responses === 1 ? 'response' : 'responses'}`}
             </span>
           </div>
-          <span className="text-[11px] font-normal text-[#646464] leading-[16.5px]">
-            {form.timeAgo}
+          <span className={`text-[11px] font-normal leading-[16.5px] ${isTargetReached ? 'text-[#6d47c6]' : 'text-[#646464]'}`}>
+            {isTargetReached ? 'Target reached' : form.timeAgo}
           </span>
         </div>
       </div>

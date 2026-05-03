@@ -4,7 +4,15 @@ import { RiMore2Fill } from 'react-icons/ri';
 import { openContextMenu, openFormOverlay } from '../../redux/slices/uiSlice';
 import { formatResponseCount } from '../../constants';
 
-const StatusBadge = ({ status }) => {
+const StatusBadge = ({ status, isTargetReached }) => {
+  if (isTargetReached) {
+    return (
+      <span className="inline-flex items-center px-[8px] py-[3px] rounded-[6px] text-[11px] font-medium leading-[15px] bg-[#efe9ff] text-[#6d47c6] border border-[#d9cdfc]">
+        Target reached
+      </span>
+    );
+  }
+
   const isLive = status === 'live';
   return (
     <span
@@ -32,6 +40,7 @@ const FormIcon = ({ form }) => (
 
 const FormListRow = ({ form, index }) => {
   const dispatch = useDispatch();
+  const isTargetReached = !!form.responseLimit && form.responses >= form.responseLimit;
 
   const handleMoreClick = (e) => {
     e.stopPropagation();
@@ -56,17 +65,21 @@ const FormListRow = ({ form, index }) => {
       </div>
 
       {/* Status */}
-      <div><StatusBadge status={form.status} /></div>
+      <div><StatusBadge status={form.status} isTargetReached={isTargetReached} /></div>
 
       {/* Responses */}
       <span className={`text-[13px] leading-[19.5px] ${form.responses > 0 ? 'text-[#1a1a1c]' : 'text-[#a8a6a0]'}`}>
         {form.responses > 0
-          ? `${formatResponseCount(form.responses)} ${form.responses === 1 ? 'response' : 'responses'}`
+          ? (isTargetReached
+            ? `🎉 ${formatResponseCount(form.responses)}/${formatResponseCount(form.responseLimit)} responses`
+            : `${formatResponseCount(form.responses)} ${form.responses === 1 ? 'response' : 'responses'}`)
           : 'No responses yet'}
       </span>
 
       {/* Last updated */}
-      <span className="text-[13px] text-[#a8a6a0] leading-[19.5px]">{form.timeAgo}</span>
+      <span className={`text-[13px] leading-[19.5px] ${isTargetReached ? 'text-[#6d47c6]' : 'text-[#a8a6a0]'}`}>
+        {isTargetReached ? 'Target reached' : form.timeAgo}
+      </span>
 
       {/* More options */}
       <button

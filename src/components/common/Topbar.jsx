@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { RiNotification3Line } from 'react-icons/ri';
-import { openFormOverlay } from '../../redux/slices/uiSlice';
+import { openFormOverlay, toggleNotificationCenter } from '../../redux/slices/uiSlice';
 import SearchDropdown from '../ui/SearchPalette';
 
 const shimmer = 'relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.6),transparent)]';
@@ -17,6 +17,7 @@ const SearchIcon = () => (
 const Topbar = () => {
   const dispatch = useDispatch();
   const isLoading = useSelector((s) => s.forms.isLoading);
+  const unreadCount = useSelector((s) => s.notifications.notifications.filter((item) => item.unread).length);
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const containerRef = useRef(null);
@@ -112,10 +113,18 @@ const Topbar = () => {
 
       {/* Notification bell */}
       <div className="relative p-0.5">
-        <button className="w-8 h-8 bg-white border border-[rgba(0,0,0,0.08)] rounded-[6px] flex items-center justify-center hover:bg-[#f4f3ef] transition-colors cursor-pointer">
+        <button
+          onClick={() => dispatch(toggleNotificationCenter())}
+          className="w-8 h-8 bg-white border border-[rgba(0,0,0,0.08)] rounded-[6px] flex items-center justify-center hover:bg-[#f4f3ef] transition-colors cursor-pointer"
+          aria-label="Toggle notifications"
+        >
           <RiNotification3Line size={15} className="text-[#6b6966]" />
         </button>
-        <span className="absolute top-[5px] right-[5px] w-[6px] h-[6px] bg-[#d4522a] rounded-[3px] border border-[#f4f3ef]" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-[1px] -right-[1px] min-w-[15px] h-[15px] px-[4px] bg-[#d4522a] rounded-full border border-white text-[9px] text-white font-semibold leading-[13px] text-center">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
       </div>
 
       {/* Dropdown — fixed-positioned below the search bar */}
