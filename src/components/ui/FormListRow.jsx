@@ -71,7 +71,7 @@ const FormListRow = ({ form, index }) => {
       <span className={`text-[13px] leading-[19.5px] ${form.responses > 0 ? 'text-[#1a1a1c]' : 'text-[#a8a6a0]'}`}>
         {form.responses > 0
           ? (isTargetReached
-            ? `🎉 ${formatResponseCount(form.responses)}/${formatResponseCount(form.responseLimit)} responses`
+                ? `${formatResponseCount(form.responses)}/${formatResponseCount(form.responseLimit)} responses`
             : `${formatResponseCount(form.responses)} ${form.responses === 1 ? 'response' : 'responses'}`)
           : 'No responses yet'}
       </span>

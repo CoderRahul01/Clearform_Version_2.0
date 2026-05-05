@@ -83,12 +83,12 @@ const FormCard = ({ form }) => {
             <RiFileTextLine size={11} className={isTargetReached ? 'text-[#6d47c6]' : 'text-[#646464]'} />
             <span className="text-[11px] font-normal text-[#646464] leading-[16.5px]">
               {isTargetReached
-                ? `🎉 ${formatResponseCount(form.responses)}/${formatResponseCount(form.responseLimit)} responses`
+                ? `${formatResponseCount(form.responses)}/${formatResponseCount(form.responseLimit)} responses`
                 : `${formatResponseCount(form.responses)} ${form.responses === 1 ? 'response' : 'responses'}`}
             </span>
           </div>
-          <span className={`text-[11px] font-normal leading-[16.5px] ${isTargetReached ? 'text-[#6d47c6]' : 'text-[#646464]'}`}>
-            {isTargetReached ? 'Target reached' : form.timeAgo}
+          <span className="text-[11px] font-normal leading-[16.5px] text-[#646464]">
+            {form.timeAgo}
           </span>
         </div>
       </div>

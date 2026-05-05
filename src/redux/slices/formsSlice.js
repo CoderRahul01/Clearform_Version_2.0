@@ -21,6 +21,7 @@ const initialState = {
   viewMode: 'grid',    // 'grid' | 'list'
   sortOrder: 'recent', // 'recent' | 'oldest' | 'most_responses' | 'fewest_responses' | 'name_az' | 'name_za'
   isLoading: true,     // simulates initial data fetch
+  advancedFilters: { status: [], responses: [] }, // status: ['live','draft','archived'], responses: ['has_responses','no_responses']
 };
 
 const formsSlice = createSlice({
@@ -90,6 +91,12 @@ const formsSlice = createSlice({
       const form = state.forms.find((f) => f.id === action.payload);
       if (form) form.status = 'live';
     },
+    setAdvancedFilters(state, action) {
+      state.advancedFilters = action.payload;
+    },
+    clearAdvancedFilters(state) {
+      state.advancedFilters = { status: [], responses: [] };
+    },
   },
 });
 
@@ -110,12 +117,14 @@ export const {
   deleteForm,
   archiveForm,
   unarchiveForm,
+  setAdvancedFilters,
+  clearAdvancedFilters,
 } = formsSlice.actions;
 
 export const selectFilteredForms = (state) => {
-  const { forms, activeFilter, activeWorkspace, searchQuery, sortOrder } = state.forms;
+  const { forms, activeFilter, activeWorkspace, searchQuery, sortOrder, advancedFilters } = state.forms;
 
-  const filtered = forms.filter((form) => {
+  let filtered = forms.filter((form) => {
     const matchesFilter = activeFilter === 'archived'
       ? form.status === 'archived'
       : (activeFilter === 'all' || form.status === activeFilter) && form.status !== 'archived';
@@ -126,6 +135,18 @@ export const selectFilteredForms = (state) => {
       form.title.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesFilter && matchesWorkspace && matchesSearch;
   });
+
+  if (advancedFilters.status.length > 0) {
+    filtered = filtered.filter((f) => advancedFilters.status.includes(f.status));
+  }
+
+  if (advancedFilters.responses.length === 1) {
+    if (advancedFilters.responses[0] === 'has_responses') {
+      filtered = filtered.filter((f) => f.responses > 0);
+    } else if (advancedFilters.responses[0] === 'no_responses') {
+      filtered = filtered.filter((f) => f.responses === 0);
+    }
+  }
 
   return [...filtered].sort((a, b) => {
     switch (sortOrder) {
