@@ -1,7 +1,7 @@
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { motion } from 'motion/react';
-import { RiFileTextLine } from 'react-icons/ri';
-import { openContextMenu, openFormOverlay } from '../../redux/slices/uiSlice';
+import { RiFileTextLine, RiCheckLine } from 'react-icons/ri';
+import { openContextMenu, openFormOverlay, toggleCompareForm } from '../../redux/slices/uiSlice';
 import { formatResponseCount } from '../../constants';
 
 const StatusBadge = ({ status, isTargetReached }) => {
@@ -38,6 +38,11 @@ const ThumbnailLines = ({ overlayColor }) => (
 
 const FormCard = ({ form }) => {
   const dispatch = useDispatch();
+  const compareModeActive = useSelector((s) => s.ui.compareMode.active);
+  const selectedFormIds = useSelector((s) => s.ui.compareMode.selectedFormIds);
+  const isSelected = selectedFormIds.includes(form.id);
+  const isMaxed = selectedFormIds.length >= 4;
+  const isDisabled = compareModeActive && isMaxed && !isSelected;
   const isTargetReached = !!form.responseLimit && form.responses >= form.responseLimit;
 
   const handleMoreClick = (e) => {
@@ -46,15 +51,45 @@ const FormCard = ({ form }) => {
     dispatch(openContextMenu({ formId: form.id, x: rect.left, y: rect.bottom + 4 }));
   };
 
+  const handleClick = () => {
+    if (compareModeActive) {
+      if (isDisabled) return;
+      dispatch(toggleCompareForm(form.id));
+    } else {
+      dispatch(openFormOverlay(form.id));
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      whileHover={{ y: -2, boxShadow: '0 8px 24px rgba(0,0,0,0.10)' }}
+      whileHover={!isDisabled ? { y: -2, boxShadow: isSelected ? '0 8px 24px rgba(0,0,0,0.18)' : '0 8px 24px rgba(0,0,0,0.10)' } : {}}
       transition={{ duration: 0.2 }}
-      onClick={() => dispatch(openFormOverlay(form.id))}
-      className="bg-white border border-[rgba(0,0,0,0.08)] rounded-[14px] overflow-hidden cursor-pointer flex flex-col group"
+      onClick={handleClick}
+      className={`bg-white rounded-[14px] overflow-hidden flex flex-col group relative transition-all duration-150 ${
+        isDisabled
+          ? 'opacity-40 cursor-not-allowed'
+          : 'cursor-pointer'
+      } ${
+        isSelected
+          ? 'border-2 border-[#1a1a1c] ring-2 ring-[#1a1a1c]/10'
+          : 'border border-[rgba(0,0,0,0.08)]'
+      }`}
     >
+      {/* Compare mode selection checkmark */}
+      {compareModeActive && (
+        <div
+          className={`absolute top-2 left-2 z-10 size-[18px] rounded-full flex items-center justify-center transition-all duration-150 ${
+            isSelected
+              ? 'bg-[#1a1a1c] border border-[#1a1a1c]'
+              : 'bg-white/80 border border-[rgba(0,0,0,0.2)]'
+          }`}
+        >
+          {isSelected && <RiCheckLine size={11} className="text-white" />}
+        </div>
+      )}
+
       {/* Thumbnail */}
       <div
         className="h-[100px] relative flex items-center justify-center overflow-hidden"
@@ -70,12 +105,14 @@ const FormCard = ({ form }) => {
           <span className="text-[12.5px] font-medium text-[#1a1916] leading-[16.25px] flex-1 pr-1 truncate">
             {form.title}
           </span>
-          <button
-            onClick={handleMoreClick}
-            className="w-[22px] h-[17px] flex items-center justify-center rounded-[6px] text-[#6b6966] hover:bg-[#f4f3ef] transition-colors text-[12px] font-medium leading-none shrink-0 opacity-0 group-hover:opacity-100"
-          >
-            ···
-          </button>
+          {!compareModeActive && (
+            <button
+              onClick={handleMoreClick}
+              className="w-[24px] h-[20px] flex items-center justify-center rounded-[6px] text-[#6b6966] hover:bg-[#f4f3ef] hover:text-[#1a1916] transition-colors text-[16px] font-bold leading-none shrink-0 opacity-0 group-hover:opacity-100"
+            >
+              ···
+            </button>
+          )}
         </div>
 
         <div className="flex items-center justify-between">
