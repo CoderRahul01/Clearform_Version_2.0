@@ -28,6 +28,7 @@ import WorkspaceContextMenu from '../components/ui/WorkspaceContextMenu';
 import RenameWorkspaceModal from '../components/ui/RenameWorkspaceModal';
 import DeleteWorkspaceModal from '../components/ui/DeleteWorkspaceModal';
 import NotificationCenter from '../components/ui/NotificationCenter';
+import CompareModeDock from '../components/ui/CompareModeDock';
 import { useToast } from '../hooks/useToast';
 
 /* ── Empty state: no forms from filter ── */
@@ -120,6 +121,8 @@ const AllFormsPage = () => {
     workspaces,
   } = useSelector((s) => s.forms);
 
+  const compareModeActive = useSelector((s) => s.ui.compareMode.active);
+
   const hasActiveFilters =
     activeFilter !== 'all' || activeWorkspace !== 'all' || searchQuery !== '';
 
@@ -190,6 +193,7 @@ const AllFormsPage = () => {
       <RenameWorkspaceModal />
       <DeleteWorkspaceModal />
       <NotificationCenter />
+      <CompareModeDock />
       <div className="flex flex-col h-full overflow-hidden relative">
         <Topbar />
         {/* Page heading + CTA */}
@@ -238,8 +242,8 @@ const AllFormsPage = () => {
         {/* Workspace chips */}
         <WorkspaceChips />
 
-        {/* Content area */}
-        <div className="flex-1 overflow-y-auto px-6 pb-8">
+        {/* Content area — extra bottom padding when compare dock is visible */}
+        <div className={`flex-1 overflow-y-auto px-6 transition-all duration-300 ${compareModeActive ? 'pb-28' : 'pb-8'}`}>
           <AnimatePresence mode="wait">
             {isLoading ? (
               <motion.div key="skeleton" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>

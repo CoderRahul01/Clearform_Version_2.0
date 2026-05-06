@@ -402,11 +402,16 @@ const TemplatesPage = () => {
   /* `?banner=default|loading|error|limit` pins the CTA banner to a specific
      state so designers can preview each variant without triggering the flow. */
   const bannerOverride = searchParams.get('banner');
+  /* `?filter=<category>` pre-selects a category filter tab — used when navigating
+     from a template card in the AllFormsPage banner strip. */
+  const filterParam = searchParams.get('filter');
   const formsCount = useSelector((s) => s.forms.forms.length);
   const [loadStage, setLoadStage] = useState('full');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
-  const [activeFilter, setActiveFilter] = useState('All');
+  const [activeFilter, setActiveFilter] = useState(
+    FILTER_TABS.includes(filterParam) ? filterParam : 'All'
+  );
   /* Increment on Retry to re-run the error attempt loop (skeleton → error). */
   const [errorAttempt, setErrorAttempt] = useState(0);
   /* Holds the id of the template currently being instantiated (drives the C4
@@ -433,6 +438,14 @@ const TemplatesPage = () => {
         : isAtLimit
           ? 'limit'
           : 'default';
+
+  /* Sync active filter whenever the ?filter= URL param changes (e.g. user clicks
+     a different banner template while already on this page). */
+  useEffect(() => {
+    if (filterParam && FILTER_TABS.includes(filterParam)) {
+      setActiveFilter(filterParam);
+    }
+  }, [filterParam]);
 
   /* Progressive loading: full skeleton → partial skeleton → loaded.
      When `?state=` is set, we skip partial and go straight to the override state

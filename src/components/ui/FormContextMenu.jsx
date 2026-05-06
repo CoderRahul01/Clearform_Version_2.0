@@ -12,7 +12,7 @@ import {
   RiArchiveLine,
   RiDeleteBinLine,
 } from 'react-icons/ri';
-import { closeContextMenu, openDeleteModal, openDuplicateModal, openArchiveModal, openShareModal } from '../../redux/slices/uiSlice';
+import { closeContextMenu, openDeleteModal, openDuplicateModal, openArchiveModal, openShareModal, openCompareMode } from '../../redux/slices/uiSlice';
 
 const MENU_ITEMS = [
   { id: 'view', icon: RiEyeLine, label: 'View responses' },
@@ -58,6 +58,8 @@ const FormContextMenu = () => {
       dispatch(openArchiveModal({ formId, formTitle: form?.title ?? '', responses: form?.responses ?? 0 }));
     } else if (itemId === 'share') {
       dispatch(openShareModal({ formId, formTitle: form?.title ?? '' }));
+    } else if (itemId === 'compare') {
+      dispatch(openCompareMode({ formId }));
     } else {
       dispatch(closeContextMenu());
     }

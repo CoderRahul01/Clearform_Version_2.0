@@ -57,6 +57,10 @@ const initialState = {
   notificationCenter: {
     open: false,
   },
+  compareMode: {
+    active: false,
+    selectedFormIds: [],
+  },
 };
 
 const uiSlice = createSlice({
@@ -149,6 +153,29 @@ const uiSlice = createSlice({
     closeNotificationCenter(state) {
       state.notificationCenter.open = false;
     },
+    openCompareMode(state, action) {
+      const { formId } = action.payload;
+      state.compareMode.active = true;
+      if (!state.compareMode.selectedFormIds.includes(formId)) {
+        state.compareMode.selectedFormIds = [formId];
+      }
+      state.contextMenu = { open: false, formId: null, x: 0, y: 0 };
+    },
+    closeCompareMode(state) {
+      state.compareMode = { active: false, selectedFormIds: [] };
+    },
+    toggleCompareForm(state, action) {
+      const formId = action.payload;
+      const ids = state.compareMode.selectedFormIds;
+      if (ids.includes(formId)) {
+        state.compareMode.selectedFormIds = ids.filter((id) => id !== formId);
+      } else if (ids.length < 4) {
+        state.compareMode.selectedFormIds = [...ids, formId];
+      }
+    },
+    clearCompareSelection(state) {
+      state.compareMode.selectedFormIds = [];
+    },
   },
 });
 
@@ -177,6 +204,10 @@ export const {
   closeDeleteWorkspaceModal,
   toggleNotificationCenter,
   closeNotificationCenter,
+  openCompareMode,
+  closeCompareMode,
+  toggleCompareForm,
+  clearCompareSelection,
 } = uiSlice.actions;
 
 export default uiSlice.reducer;

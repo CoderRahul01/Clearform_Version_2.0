@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useDispatch } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   RiLayoutMasonryLine,
@@ -15,13 +16,14 @@ import {
 } from 'react-icons/ri';
 import { dismissTemplateBanner } from '../../redux/slices/formsSlice';
 
+/* `filter` maps to the category filter tabs on TemplatesPage */
 const TEMPLATES = [
-  { id: 'nps',        icon: RiSurveyLine,      label: 'NPS Survey',       sub: 'Customer care', color: '#ebf2fb', iconColor: '#3b82f6' },
-  { id: 'onboarding', icon: RiHeartPulseLine,  label: 'Onboarding Flow',  sub: 'HR & Ops',      color: '#f0fdf4', iconColor: '#16a34a' },
-  { id: 'bug',        icon: RiBug2Line,         label: 'Bug Report',       sub: 'Engineering',   color: '#fffbeb', iconColor: '#d97706' },
-  { id: 'exit',       icon: RiUserSearchLine,   label: 'Exit Interview',   sub: 'HR',            color: '#f0ebfb', iconColor: '#8b5cf6' },
-  { id: 'product',    icon: RiStarLine,         label: 'Product Feedback', sub: 'Product',       color: '#e8f6f5', iconColor: '#0d9488' },
-  { id: 'csat',       icon: RiBarChartLine,     label: 'CSAT Survey',      sub: 'Support',       color: '#fdf1ed', iconColor: '#ef4444' },
+  { id: 'nps',        icon: RiSurveyLine,      label: 'NPS Survey',       sub: 'Customer care', color: '#ebf2fb', iconColor: '#3b82f6', filter: 'Support' },
+  { id: 'onboarding', icon: RiHeartPulseLine,  label: 'Onboarding Flow',  sub: 'HR & Ops',      color: '#f0fdf4', iconColor: '#16a34a', filter: 'HR & Recruitment' },
+  { id: 'bug',        icon: RiBug2Line,         label: 'Bug Report',       sub: 'Engineering',   color: '#fffbeb', iconColor: '#d97706', filter: 'Support' },
+  { id: 'exit',       icon: RiUserSearchLine,   label: 'Exit Interview',   sub: 'HR',            color: '#f0ebfb', iconColor: '#8b5cf6', filter: 'HR & Recruitment' },
+  { id: 'product',    icon: RiStarLine,         label: 'Product Feedback', sub: 'Product',       color: '#e8f6f5', iconColor: '#0d9488', filter: 'Research' },
+  { id: 'csat',       icon: RiBarChartLine,     label: 'CSAT Survey',      sub: 'Support',       color: '#fdf1ed', iconColor: '#ef4444', filter: 'Support' },
 ];
 
 const Shimmer = ({ className }) => (
@@ -45,6 +47,7 @@ const itemVariants = {
 
 const TemplateBanner = ({ visible, isLoading }) => {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -107,7 +110,7 @@ const TemplateBanner = ({ visible, isLoading }) => {
                       onClick={() => setExpanded((v) => !v)}
                       className="bg-white border border-[#e5e3dc] rounded-[8px] px-[13px] py-[7px] text-[12px] font-medium text-[#1a1a1c] leading-normal hover:bg-[#f4f3ef] transition-colors cursor-pointer whitespace-nowrap"
                     >
-                      View all templates
+                      {expanded ? 'Collapse' : 'View all templates'}
                     </button>
                     <button
                       onClick={() => dispatch(dismissTemplateBanner())}
@@ -161,6 +164,7 @@ const TemplateBanner = ({ visible, isLoading }) => {
                             variants={itemVariants}
                             whileHover={{ scale: 1.05 }}
                             transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+                            onClick={() => navigate(`/dashboard/templates?filter=${encodeURIComponent(t.filter)}`)}
                             className="flex-1 flex flex-col gap-[10px] items-start px-4 py-4 border-r border-[rgba(0,0,0,0.08)] hover:bg-[#f9f8f7] cursor-pointer relative z-10 min-w-0"
                           >
                             <div
@@ -186,6 +190,7 @@ const TemplateBanner = ({ visible, isLoading }) => {
                         variants={itemVariants}
                         whileHover={{ scale: 1.05 }}
                         transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+                        onClick={() => navigate('/dashboard/templates')}
                         className="flex flex-col items-center justify-center gap-[8px] px-4 py-4 w-[80px] shrink-0 hover:bg-[#f9f8f7] cursor-pointer relative z-10"
                       >
                         <RiArrowRightCircleLine size={24} className="text-[#6b6966]" />

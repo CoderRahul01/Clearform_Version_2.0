@@ -63,7 +63,7 @@ const Topbar = () => {
   }
 
   return (
-    <header className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6 relative z-10">
+    <header className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6">
       {/* Page title */}
       <h1 className="text-[20px] font-medium text-[#1a1a1c] tracking-[-0.2px] leading-[25px] whitespace-nowrap">
         All forms
@@ -72,8 +72,8 @@ const Topbar = () => {
       {/* Search bar — elevated above backdrop when dropdown is open */}
       <div
         ref={containerRef}
-        className={`relative w-[400px] ${isOpen ? 'z-[401]' : ''}`}
-        style={isOpen ? { position: 'relative' } : {}}
+        className={`relative w-[400px] ${isOpen ? 'z-[402]' : ''}`}
+        onClick={() => inputRef.current?.focus()}
       >
         <div
           className={`w-full bg-[#f4f3ef] flex items-center gap-2 px-[13px] py-[9px] rounded-[8px] border transition-colors ${
