@@ -1,4 +1,4 @@
-import { createSlice } from '@reduxjs/toolkit';
+import { createSlice, createSelector } from '@reduxjs/toolkit';
 import { FORMS_DATA, NAV_WORKSPACES } from '../../constants';
 
 // Convert a "Xm/Xh/Xd/Xw ago" string to milliseconds so we can sort by recency
@@ -121,50 +121,71 @@ export const {
   clearAdvancedFilters,
 } = formsSlice.actions;
 
-export const selectFilteredForms = (state) => {
-  const { forms, activeFilter, activeWorkspace, searchQuery, sortOrder, advancedFilters } = state.forms;
+// Memoized with createSelector so the result is only recomputed when one of
+// its inputs actually changes. Previously this returned a fresh array on every
+// dispatch (including unrelated toast/modal dispatches), which caused every
+// consumer of useSelector(selectFilteredForms) to re-render needlessly.
+const selectFormsRaw         = (state) => state.forms.forms;
+const selectActiveFilter     = (state) => state.forms.activeFilter;
+const selectActiveWorkspace  = (state) => state.forms.activeWorkspace;
+const selectSearchQuery      = (state) => state.forms.searchQuery;
+const selectSortOrder        = (state) => state.forms.sortOrder;
+const selectAdvancedFilters  = (state) => state.forms.advancedFilters;
 
-  let filtered = forms.filter((form) => {
-    const matchesFilter = activeFilter === 'archived'
-      ? form.status === 'archived'
-      : (activeFilter === 'all' || form.status === activeFilter) && form.status !== 'archived';
-    const matchesWorkspace =
-      activeWorkspace === 'all' || form.workspace === activeWorkspace;
-    const matchesSearch =
-      !searchQuery ||
-      form.title.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesWorkspace && matchesSearch;
-  });
+export const selectFilteredForms = createSelector(
+  [
+    selectFormsRaw,
+    selectActiveFilter,
+    selectActiveWorkspace,
+    selectSearchQuery,
+    selectSortOrder,
+    selectAdvancedFilters,
+  ],
+  (forms, activeFilter, activeWorkspace, searchQuery, sortOrder, advancedFilters) => {
+    let filtered = forms.filter((form) => {
+      const matchesFilter = activeFilter === 'archived'
+        ? form.status === 'archived'
+        : (activeFilter === 'all' || form.status === activeFilter) && form.status !== 'archived';
+      const matchesWorkspace =
+        activeWorkspace === 'all' || form.workspace === activeWorkspace;
+      const matchesSearch =
+        !searchQuery ||
+        form.title.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchesFilter && matchesWorkspace && matchesSearch;
+    });
 
-  if (advancedFilters.status.length > 0) {
-    filtered = filtered.filter((f) => advancedFilters.status.includes(f.status));
-  }
-
-  if (advancedFilters.responses.length === 1) {
-    if (advancedFilters.responses[0] === 'has_responses') {
-      filtered = filtered.filter((f) => f.responses > 0);
-    } else if (advancedFilters.responses[0] === 'no_responses') {
-      filtered = filtered.filter((f) => f.responses === 0);
+    if (advancedFilters.status.length > 0) {
+      filtered = filtered.filter((f) => advancedFilters.status.includes(f.status));
     }
-  }
 
-  return [...filtered].sort((a, b) => {
-    switch (sortOrder) {
-      case 'oldest':
-        return timeAgoToMs(a.timeAgo) - timeAgoToMs(b.timeAgo);
-      case 'most_responses':
-        return b.responses - a.responses;
-      case 'fewest_responses':
-        return a.responses - b.responses;
-      case 'name_az':
-        return a.title.localeCompare(b.title);
-      case 'name_za':
-        return b.title.localeCompare(a.title);
-      case 'recent':
-      default:
-        return timeAgoToMs(a.timeAgo) - timeAgoToMs(b.timeAgo);
+    if (advancedFilters.responses.length === 1) {
+      if (advancedFilters.responses[0] === 'has_responses') {
+        filtered = filtered.filter((f) => f.responses > 0);
+      } else if (advancedFilters.responses[0] === 'no_responses') {
+        filtered = filtered.filter((f) => f.responses === 0);
+      }
     }
-  });
-};
+
+    return [...filtered].sort((a, b) => {
+      switch (sortOrder) {
+        case 'oldest':
+          // "ago" values: bigger = older. Oldest first → descending.
+          return timeAgoToMs(b.timeAgo) - timeAgoToMs(a.timeAgo);
+        case 'most_responses':
+          return b.responses - a.responses;
+        case 'fewest_responses':
+          return a.responses - b.responses;
+        case 'name_az':
+          return a.title.localeCompare(b.title);
+        case 'name_za':
+          return b.title.localeCompare(a.title);
+        case 'recent':
+        default:
+          // Smallest "ago" = most recent → ascending.
+          return timeAgoToMs(a.timeAgo) - timeAgoToMs(b.timeAgo);
+      }
+    });
+  }
+);
 
 export default formsSlice.reducer;

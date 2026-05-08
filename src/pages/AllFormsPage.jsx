@@ -8,7 +8,6 @@ import {
   setActiveFilter,
   setActiveWorkspace,
 } from '../redux/slices/formsSlice';
-import { openSearchPalette } from '../redux/slices/uiSlice';
 import FilterTabs from '../components/ui/FilterTabs';
 import WorkspaceChips from '../components/ui/WorkspaceChips';
 import TemplateBanner from '../components/ui/TemplateBanner';
@@ -157,18 +156,6 @@ const AllFormsPage = () => {
       duration: 5000,
     });
   }, [allForms, isLoading, showToast]);
-
-  /* Global ⌘K listener */
-  useEffect(() => {
-    const handler = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        dispatch(openSearchPalette());
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [dispatch]);
 
   const handleClearFilters = () => {
     dispatch(setActiveFilter('all'));

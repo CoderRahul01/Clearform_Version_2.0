@@ -1,5 +1,11 @@
 import { createSlice } from '@reduxjs/toolkit';
 
+// Monotonic counter — guarantees unique IDs even if multiple toasts are
+// dispatched in the same millisecond. Replaces the previous
+// `Date.now() + Math.random()` which could (rarely) collide and produced
+// non-deterministic, hard-to-debug React keys.
+let nextToastId = 1;
+
 const toastSlice = createSlice({
   name: 'toast',
   initialState: {
@@ -8,7 +14,7 @@ const toastSlice = createSlice({
   reducers: {
     addToast: (state, action) => {
       const toast = {
-        id: Date.now() + Math.random(),
+        id: nextToastId++,
         ...action.payload,
       };
       state.toasts.push(toast);
