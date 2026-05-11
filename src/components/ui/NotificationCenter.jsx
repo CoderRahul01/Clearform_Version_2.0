@@ -9,6 +9,8 @@ import {
   setNotificationTab,
 } from '../../redux/slices/notificationsSlice';
 
+const notifEase = [0.25, 0.1, 0.25, 1];
+
 const TABS = [
   { id: 'all', label: 'All' },
   { id: 'alerts', label: 'Alerts' },
@@ -131,7 +133,7 @@ const NotificationCenter = () => {
             initial={{ opacity: 0, y: -6, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
+            transition={{ duration: 0.16, ease: notifEase }}
             className="fixed right-4 top-[62px] w-[360px] z-40 rounded-[16px] border border-[#e2ded8] bg-white shadow-[0px_8px_32px_0px_rgba(0,0,0,0.1),0px_1px_4px_0px_rgba(0,0,0,0.06)] flex flex-col overflow-hidden"
           >
             {/* Header */}
@@ -183,12 +185,18 @@ const NotificationCenter = () => {
                         {dateGroup}
                       </span>
                     </div>
-                    {items.map((item) => (
-                      <NotificationItem
+                    {items.map((item, idx) => (
+                      <motion.div
                         key={item.id}
-                        item={item}
-                        onRead={() => dispatch(markNotificationRead(item.id))}
-                      />
+                        initial={{ opacity: 0, x: -8 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.16, delay: idx * 0.025, ease: notifEase }}
+                      >
+                        <NotificationItem
+                          item={item}
+                          onRead={() => dispatch(markNotificationRead(item.id))}
+                        />
+                      </motion.div>
                     ))}
                   </div>
                 ))

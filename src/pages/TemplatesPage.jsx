@@ -395,7 +395,7 @@ const EmptyTemplatesBody = () => (
 );
 
 const TemplatesPage = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   /* `?state=empty` and `?state=error` force the empty/error variants for design previews —
      the production flow runs through the normal full → partial → loaded skeleton stages. */
   const stateOverride = searchParams.get('state');
@@ -405,13 +405,24 @@ const TemplatesPage = () => {
   /* `?filter=<category>` pre-selects a category filter tab — used when navigating
      from a template card in the AllFormsPage banner strip. */
   const filterParam = searchParams.get('filter');
+  const activeFilter =
+    filterParam && FILTER_TABS.includes(filterParam) ? filterParam : 'All';
+
+  const selectFilterTab = (tab) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (tab === 'All') next.delete('filter');
+        else next.set('filter', tab);
+        return next;
+      },
+      { replace: true }
+    );
+  };
   const formsCount = useSelector((s) => s.forms.forms.length);
   const [loadStage, setLoadStage] = useState('full');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
-  const [activeFilter, setActiveFilter] = useState(
-    FILTER_TABS.includes(filterParam) ? filterParam : 'All'
-  );
   /* Increment on Retry to re-run the error attempt loop (skeleton → error). */
   const [errorAttempt, setErrorAttempt] = useState(0);
   /* Holds the id of the template currently being instantiated (drives the C4
@@ -439,27 +450,25 @@ const TemplatesPage = () => {
           ? 'limit'
           : 'default';
 
-  /* Sync active filter whenever the ?filter= URL param changes (e.g. user clicks
-     a different banner template while already on this page). */
-  useEffect(() => {
-    if (filterParam && FILTER_TABS.includes(filterParam)) {
-      setActiveFilter(filterParam);
-    }
-  }, [filterParam]);
-
   /* Progressive loading: full skeleton → partial skeleton → loaded.
      When `?state=` is set, we skip partial and go straight to the override state
      so designers don't have to wait through the full sequence to preview. */
   useEffect(() => {
     if (stateOverride === 'empty') {
-      setLoadStage('full');
+      const tReset = setTimeout(() => setLoadStage('full'), 0);
       const t = setTimeout(() => setLoadStage('empty'), FULL_SKELETON_MS);
-      return () => clearTimeout(t);
+      return () => {
+        clearTimeout(tReset);
+        clearTimeout(t);
+      };
     }
     if (stateOverride === 'error') {
-      setLoadStage('full');
+      const tReset = setTimeout(() => setLoadStage('full'), 0);
       const t = setTimeout(() => setLoadStage('error'), FULL_SKELETON_MS);
-      return () => clearTimeout(t);
+      return () => {
+        clearTimeout(tReset);
+        clearTimeout(t);
+      };
     }
 
     const t1 = setTimeout(() => setLoadStage('partial'), FULL_SKELETON_MS);
@@ -896,7 +905,7 @@ const TemplatesPage = () => {
                 {FILTER_TABS.map((tab) => (
                   <button
                     key={tab}
-                    onClick={() => setActiveFilter(tab)}
+                    onClick={() => selectFilterTab(tab)}
                     className={`h-[29px] flex items-center px-[9px] rounded-[999px] text-[10px] font-medium leading-[15px] cursor-pointer transition-colors whitespace-nowrap ${
                       activeFilter === tab
                         ? 'bg-[#1a1a1c] text-white border border-[#1a1a1c]'

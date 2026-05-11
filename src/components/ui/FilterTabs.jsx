@@ -1,6 +1,9 @@
 import { useRef, useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { AnimatePresence, motion } from 'motion/react';
 import { RiFilter3Line, RiLayoutGridLine, RiMenuLine, RiSettings3Line, RiArrowUpLine, RiArrowDownLine } from 'react-icons/ri';
+
+const menuEase = [0.25, 0.1, 0.25, 1];
 
 const SortIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -225,10 +228,15 @@ const FilterTabs = () => {
             </span>
           </button>
 
-          {filterOpen && (
-            <div
+          <AnimatePresence>
+            {filterOpen && (
+            <motion.div
               ref={filterMenuRef}
-              className="absolute right-0 top-[calc(100%+6px)] z-50 bg-white border border-[#e5e5e2] rounded-[14px] shadow-[0px_8px_24px_0px_rgba(0,0,0,0.08),0px_2px_6px_0px_rgba(0,0,0,0.04)] w-[260px] overflow-hidden outline-none"
+              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.98 }}
+              transition={{ duration: 0.14, ease: menuEase }}
+              className="absolute right-0 top-[calc(100%+6px)] z-50 bg-white border border-[#e5e5e2] rounded-[14px] shadow-[0px_8px_24px_0px_rgba(0,0,0,0.08),0px_2px_6px_0px_rgba(0,0,0,0.04)] w-[260px] overflow-hidden outline-none origin-top-right"
             >
               {/* Header */}
               <div className="border-b border-[#e5e5e2] flex items-center justify-between px-[14px] pt-[12px] pb-[9px]">
@@ -323,8 +331,9 @@ const FilterTabs = () => {
                   Apply
                 </button>
               </div>
-            </div>
-          )}
+            </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Sort dropdown */}
@@ -342,10 +351,15 @@ const FilterTabs = () => {
             </span>
           </button>
 
-          {sortOpen && (
-            <div
+          <AnimatePresence>
+            {sortOpen && (
+            <motion.div
               ref={sortMenuRef}
-              className="absolute right-0 top-[calc(100%+6px)] z-50 bg-white border border-[#e5e5e2] rounded-[14px] shadow-[0px_8px_24px_0px_rgba(0,0,0,0.08),0px_2px_6px_0px_rgba(0,0,0,0.04)] min-w-[240px] overflow-hidden outline-none"
+              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.98 }}
+              transition={{ duration: 0.14, ease: menuEase }}
+              className="absolute right-0 top-[calc(100%+6px)] z-50 bg-white border border-[#e5e5e2] rounded-[14px] shadow-[0px_8px_24px_0px_rgba(0,0,0,0.08),0px_2px_6px_0px_rgba(0,0,0,0.04)] min-w-[240px] overflow-hidden outline-none origin-top-right"
             >
               {/* SORT BY header */}
               <div className="border-b border-[#e5e5e2] px-[14px] pt-[12px] pb-[9px]">
@@ -410,8 +424,9 @@ const FilterTabs = () => {
                   </button>
                 </div>
               </div>
-            </div>
-          )}
+            </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* View toggle */}

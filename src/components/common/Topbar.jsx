@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { AnimatePresence, motion } from 'motion/react';
 import { RiNotification3Line } from 'react-icons/ri';
 import { openFormOverlay, toggleNotificationCenter } from '../../redux/slices/uiSlice';
 import SearchDropdown from '../ui/SearchPalette';
 
 const shimmer = 'relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.6),transparent)]';
 const Sk = ({ className }) => <div className={`bg-[#ece9e3] ${shimmer} ${className}`} />;
+
+const topbarEase = [0.25, 0.1, 0.25, 1];
 
 const SearchIcon = () => (
   <svg width="10" height="14" viewBox="0 0 10 14" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0">
@@ -52,94 +55,117 @@ const Topbar = () => {
     dispatch(openFormOverlay(form.id));
   };
 
-  if (isLoading) {
-    return (
-      <header className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6 relative z-10">
-        <Sk className="h-[20px] w-[80px] rounded-[6px]" />
-        <Sk className="h-[38px] w-[400px] rounded-[8px]" />
-        <Sk className="h-8 w-8 rounded-[6px]" />
-      </header>
-    );
-  }
-
   return (
-    <header className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6">
-      {/* Page title */}
-      <h1 className="text-[20px] font-medium text-[#1a1a1c] tracking-[-0.2px] leading-[25px] whitespace-nowrap">
-        All forms
-      </h1>
-
-      {/* Search bar — elevated above backdrop when dropdown is open */}
-      <div
-        ref={containerRef}
-        className={`relative w-[400px] ${isOpen ? 'z-[402]' : ''}`}
-        onClick={() => inputRef.current?.focus()}
-      >
-        <div
-          className={`w-full bg-[#f4f3ef] flex items-center gap-2 px-[13px] py-[9px] rounded-[8px] border transition-colors ${
-            isOpen
-              ? 'border-[#1a1a1c] shadow-[0_0_0_3px_rgba(0,0,0,0.08)]'
-              : 'border-[#e5e3dc] hover:border-[#c9c7bf]'
-          }`}
+    <AnimatePresence mode="wait">
+      {isLoading ? (
+        <motion.header
+          key="topbar-skel"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.14 }}
+          className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6 relative z-10"
         >
-          <SearchIcon />
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onFocus={open}
-            placeholder="Search forms, responses…"
-            className="flex-1 text-[13px] text-[#1a1a1c] placeholder-[#a8a6a0] bg-transparent outline-none leading-normal"
-          />
-          {isOpen ? (
-            <button
-              onMouseDown={(e) => { e.preventDefault(); close(); }}
-              className="inline-flex items-center bg-white border border-[#e5e3dc] text-[#a8a6a0] text-[10px] font-normal px-[6px] py-[2px] rounded-[4px] leading-normal hover:bg-[#f4f3ef] transition-colors shrink-0 cursor-pointer"
+          <Sk className="h-[20px] w-[80px] rounded-[6px]" />
+          <Sk className="h-[38px] w-[400px] rounded-[8px]" />
+          <Sk className="h-8 w-8 rounded-[6px]" />
+        </motion.header>
+      ) : (
+        <motion.header
+          key="topbar-main"
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: topbarEase }}
+          className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6"
+        >
+          {/* Page title */}
+          <h1 className="text-[20px] font-medium text-[#1a1a1c] tracking-[-0.2px] leading-[25px] whitespace-nowrap">
+            All forms
+          </h1>
+
+          {/* Search bar — elevated above backdrop when dropdown is open */}
+          <div
+            ref={containerRef}
+            className={`relative w-[400px] ${isOpen ? 'z-[402]' : ''}`}
+            onClick={() => inputRef.current?.focus()}
+          >
+            <div
+              className={`w-full bg-[#f4f3ef] flex items-center gap-2 px-[13px] py-[9px] rounded-[8px] border transition-colors ${
+                isOpen
+                  ? 'border-[#1a1a1c] shadow-[0_0_0_3px_rgba(0,0,0,0.08)]'
+                  : 'border-[#e5e3dc] hover:border-[#c9c7bf]'
+              }`}
             >
-              ESC
-            </button>
-          ) : (
-            <div className="flex items-center gap-[2px] shrink-0 pointer-events-none">
-              <kbd className="bg-white border border-[#c9c7bf] rounded-[3px] px-[5px] py-[2px] text-[10px] text-[#a8a6a0] leading-[15px] font-normal">
-                ⌘
-              </kbd>
-              <kbd className="bg-white border border-[#c9c7bf] rounded-[3px] px-[5px] py-[2px] text-[10px] text-[#a8a6a0] leading-[15px] font-normal">
-                K
-              </kbd>
+              <SearchIcon />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onFocus={open}
+                placeholder="Search forms, responses…"
+                className="flex-1 text-[13px] text-[#1a1a1c] placeholder-[#a8a6a0] bg-transparent outline-none leading-normal"
+              />
+              {isOpen ? (
+                <button
+                  onMouseDown={(e) => { e.preventDefault(); close(); }}
+                  className="inline-flex items-center bg-white border border-[#e5e3dc] text-[#a8a6a0] text-[10px] font-normal px-[6px] py-[2px] rounded-[4px] leading-normal hover:bg-[#f4f3ef] transition-colors shrink-0 cursor-pointer"
+                >
+                  ESC
+                </button>
+              ) : (
+                <div className="flex items-center gap-[2px] shrink-0 pointer-events-none">
+                  <kbd className="bg-white border border-[#c9c7bf] rounded-[3px] px-[5px] py-[2px] text-[10px] text-[#a8a6a0] leading-[15px] font-normal">
+                    ⌘
+                  </kbd>
+                  <kbd className="bg-white border border-[#c9c7bf] rounded-[3px] px-[5px] py-[2px] text-[10px] text-[#a8a6a0] leading-[15px] font-normal">
+                    K
+                  </kbd>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
 
-      {/* Notification bell */}
-      <div className="relative p-0.5">
-        <button
-          onClick={() => dispatch(toggleNotificationCenter())}
-          className="w-8 h-8 bg-white border border-[rgba(0,0,0,0.08)] rounded-[6px] flex items-center justify-center hover:bg-[#f4f3ef] transition-colors cursor-pointer"
-          aria-label="Toggle notifications"
-        >
-          <RiNotification3Line size={15} className="text-[#6b6966]" />
-        </button>
-        {unreadCount > 0 && (
-          <span className="absolute -top-[1px] -right-[1px] min-w-[15px] h-[15px] px-[4px] bg-[#d4522a] rounded-full border border-white text-[9px] text-white font-semibold leading-[13px] text-center">
-            {unreadCount > 9 ? '9+' : unreadCount}
-          </span>
-        )}
-      </div>
+          {/* Notification bell */}
+          <div className="relative p-0.5">
+            <button
+              onClick={() => dispatch(toggleNotificationCenter())}
+              className="w-8 h-8 bg-white border border-[rgba(0,0,0,0.08)] rounded-[6px] flex items-center justify-center hover:bg-[#f4f3ef] transition-colors cursor-pointer"
+              aria-label="Toggle notifications"
+            >
+              <RiNotification3Line size={15} className="text-[#6b6966]" />
+            </button>
+            <AnimatePresence>
+              {unreadCount > 0 && (
+                <motion.span
+                  key="unread-badge"
+                  initial={{ opacity: 0, scale: 0.65 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.65 }}
+                  transition={{ duration: 0.16, ease: topbarEase }}
+                  className="absolute -top-[1px] -right-[1px] min-w-[15px] h-[15px] px-[4px] bg-[#d4522a] rounded-full border border-white text-[9px] text-white font-semibold leading-[13px] text-center"
+                >
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </motion.span>
+              )}
+            </AnimatePresence>
+          </div>
 
-      {/* Dropdown — fixed-positioned below the search bar */}
-      <SearchDropdown
-        open={isOpen}
-        query={query}
-        anchorRef={containerRef}
-        onClose={close}
-        onSelectRecent={(label) => {
-          setQuery(label);
-          inputRef.current?.focus();
-        }}
-        onFormClick={handleFormClick}
-      />
-    </header>
+          {/* Dropdown — fixed-positioned below the search bar */}
+          <SearchDropdown
+            open={isOpen}
+            query={query}
+            anchorRef={containerRef}
+            onClose={close}
+            onSelectRecent={(label) => {
+              setQuery(label);
+              inputRef.current?.focus();
+            }}
+            onFormClick={handleFormClick}
+          />
+        </motion.header>
+      )}
+    </AnimatePresence>
   );
 };
 

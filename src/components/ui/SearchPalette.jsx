@@ -251,7 +251,7 @@ const SearchDropdown = ({ open, query, anchorRef, onClose, onSelectRecent, onFor
             initial={{ opacity: 0, y: -4, scale: 0.99 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.99 }}
-            transition={{ duration: 0.13, ease: [0.25, 0.1, 0.25, 1] }}
+            transition={{ duration: 0.14, ease: [0.25, 0.1, 0.25, 1] }}
             className="fixed z-401 bg-white border border-[#e5e3dc] rounded-[12px] shadow-[0_12px_40px_rgba(0,0,0,0.14)] overflow-hidden"
             style={{ top: pos.top, left: pos.left, width: pos.width }}
           >

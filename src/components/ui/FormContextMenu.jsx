@@ -77,7 +77,7 @@ const FormContextMenu = () => {
           initial={{ opacity: 0, scale: 0.95, y: -4 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: -4 }}
-          transition={{ duration: 0.12 }}
+          transition={{ duration: 0.12, ease: [0.25, 0.1, 0.25, 1] }}
           style={{ top: safeY, left: safeX }}
           className="fixed z-[200] bg-white border border-[#e5e3dc] rounded-[12px] shadow-[0_8px_32px_rgba(0,0,0,0.12)] py-1.5 w-[196px]"
         >

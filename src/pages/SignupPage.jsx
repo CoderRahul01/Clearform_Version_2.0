@@ -20,13 +20,16 @@ const MicrosoftIcon = memo(() => (
 ));
 
 const SocialButton = memo(({ children, label }) => (
-  <button
+  <motion.button
     type="button"
     aria-label={label}
-    className="flex items-center justify-center w-[58px] h-[40px] bg-white border border-[rgba(81,76,84,0.15)] rounded-[10px] hover:bg-[#f4f4f4] active:scale-95 transition-all cursor-pointer"
+    whileHover={{ scale: 1.03 }}
+    whileTap={{ scale: 0.96 }}
+    transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+    className="flex items-center justify-center w-[58px] h-[40px] bg-white border border-[rgba(81,76,84,0.15)] rounded-[10px] hover:bg-[#f4f4f4] cursor-pointer"
   >
     {children}
-  </button>
+  </motion.button>
 ));
 
 const InputField = memo(({ label, required, type = 'text', placeholder, value, onChange, name }) => {

@@ -221,9 +221,6 @@ const FormOverlayModal = () => {
     if (formId === prevFormIdRef.current) return;   // same form reopened — keep state
     prevFormIdRef.current = formId;
 
-    // Show skeleton briefly to simulate data loading
-    setIsLoading(true);
-    setFetchError(false);
     const timer = setTimeout(() => {
       setIsLoading(false);
       // ~25% chance of simulated fetch failure (only for live forms with data)
@@ -232,27 +229,29 @@ const FormOverlayModal = () => {
       }
     }, 700);
 
-    // Genuinely different form: reset UI state
-    setActiveTab('overview');
-    setResponseLimit(String(form?.responseLimit ?? 500));
-    setSelectedPause(null);
-    setNotificationsOn(false);
-    setAiInsightDismissed(false);
+    queueMicrotask(() => {
+      setIsLoading(true);
+      setFetchError(false);
+      setActiveTab('overview');
+      setResponseLimit(String(form?.responseLimit ?? 500));
+      setSelectedPause(null);
+      setNotificationsOn(false);
+      setAiInsightDismissed(false);
 
-    // Restore picker to saved pause date if one exists, otherwise reset defaults
-    const saved = form?.pauseSettings;
-    if (saved) {
-      setViewYear(saved.viewYear);
-      setViewMonth(saved.viewMonth);
-      setSelDay(saved.selDay);
-    } else {
-      setViewYear(2026);
-      setViewMonth(4);
-      setSelDay(17);
-      setHour('09');
-      setMinute('00');
-      setAmpm('AM');
-    }
+      const saved = form?.pauseSettings;
+      if (saved) {
+        setViewYear(saved.viewYear);
+        setViewMonth(saved.viewMonth);
+        setSelDay(saved.selDay);
+      } else {
+        setViewYear(2026);
+        setViewMonth(4);
+        setSelDay(17);
+        setHour('09');
+        setMinute('00');
+        setAmpm('AM');
+      }
+    });
 
     return () => clearTimeout(timer);
   }, [formId]); // eslint-disable-line react-hooks/exhaustive-deps

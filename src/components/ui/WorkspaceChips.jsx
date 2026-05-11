@@ -1,5 +1,8 @@
 import { useDispatch, useSelector } from 'react-redux';
+import { motion } from 'motion/react';
 import { setActiveWorkspace } from '../../redux/slices/formsSlice';
+
+const chipEase = [0.25, 0.1, 0.25, 1];
 
 const shimmer = 'relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.6),transparent)]';
 const Sk = ({ className }) => <div className={`bg-[#ece9e3] ${shimmer} ${className}`} />;
@@ -22,12 +25,22 @@ const WorkspaceChips = () => {
   }
 
   return (
-    <div className="flex items-center gap-2 px-6 py-3 flex-wrap">
-      {chips.map((ws) => {
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.18, ease: chipEase }}
+      className="flex items-center gap-2 px-6 py-3 flex-wrap"
+    >
+      {chips.map((ws, i) => {
         const isActive = activeWorkspace === ws.id;
         return (
-          <button
+          <motion.button
             key={ws.id}
+            type="button"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, delay: i * 0.04, ease: chipEase }}
+            whileTap={{ scale: 0.97 }}
             onClick={() => dispatch(setActiveWorkspace(ws.id))}
             className={`flex items-center gap-1 px-[11px] py-[5px] rounded-full text-[12px] font-semibold leading-[18px] transition-colors cursor-pointer border ${
               isActive
@@ -45,10 +58,10 @@ const WorkspaceChips = () => {
             {ws.count !== null && (
               <span className="opacity-60">{ws.count}</span>
             )}
-          </button>
+          </motion.button>
         );
       })}
-    </div>
+    </motion.div>
   );
 };
 

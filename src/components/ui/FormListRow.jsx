@@ -52,7 +52,7 @@ const FormListRow = ({ form, index }) => {
     <motion.div
       initial={{ opacity: 0, x: -8 }}
       animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.18, delay: index * 0.04 }}
+      transition={{ duration: 0.18, delay: index * 0.04, ease: [0.25, 0.1, 0.25, 1] }}
       onClick={() => dispatch(openFormOverlay(form.id))}
       className="grid grid-cols-[2fr_1fr_1fr_1fr_40px] gap-4 px-4 py-[14px] border-b border-[#e5e3dc] last:border-b-0 items-center hover:bg-[#fafaf8] transition-colors cursor-pointer group"
     >

@@ -65,7 +65,7 @@ const FormCard = ({ form }) => {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       whileHover={!isDisabled ? { y: -2, boxShadow: isSelected ? '0 8px 24px rgba(0,0,0,0.18)' : '0 8px 24px rgba(0,0,0,0.10)' } : {}}
-      transition={{ duration: 0.2 }}
+      transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
       onClick={handleClick}
       className={`bg-white rounded-[14px] overflow-hidden flex flex-col group relative transition-all duration-150 ${
         isDisabled

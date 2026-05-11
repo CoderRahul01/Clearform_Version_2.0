@@ -31,10 +31,14 @@ import CompareModeDock from '../components/ui/CompareModeDock';
 import { useToast } from '../hooks/useToast';
 
 /* ── Empty state: no forms from filter ── */
+const pageEase = [0.25, 0.1, 0.25, 1];
+
 const FilterEmptyState = ({ hasFilters, onClearFilters }) => (
   <motion.div
     initial={{ opacity: 0, y: 8 }}
     animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0, y: 6 }}
+    transition={{ duration: 0.22, ease: pageEase }}
     className="flex flex-col items-center justify-center py-16 gap-4"
   >
     <div className="w-14 h-14 bg-[#f4f3ef] border border-[#e5e3dc] rounded-[12px] flex items-center justify-center">
@@ -68,8 +72,10 @@ const FilterEmptyState = ({ hasFilters, onClearFilters }) => (
 /* ── List view table ── */
 const ListView = ({ forms }) => (
   <motion.div
-    initial={{ opacity: 0 }}
-    animate={{ opacity: 1 }}
+    initial={{ opacity: 0, y: 6 }}
+    animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0 }}
+    transition={{ duration: 0.2, ease: pageEase }}
     className="bg-white border border-[#e5e3dc] rounded-[12px] overflow-hidden mt-4"
   >
     <div className="bg-[#f4f3ef] border-b border-[#e5e3dc] grid grid-cols-[2fr_1fr_1fr_1fr_40px] gap-4 px-4 py-2 items-center">
@@ -95,7 +101,7 @@ const GridView = ({ forms }) => (
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: 0.2, delay: index * 0.04 }}
+        transition={{ duration: 0.2, delay: index * 0.04, ease: pageEase }}
       >
         <FormCard form={form} />
       </motion.div>
@@ -194,7 +200,13 @@ const AllFormsPage = () => {
               <div className="relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.6),transparent)] h-[38px] w-[104px] bg-[#ece9e3] rounded-[8px] shrink-0" />
             </>
           ) : (
-            <>
+            <motion.div
+              key="page-heading-loaded"
+              className="flex items-end justify-between w-full"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.24, ease: pageEase, delay: 0.04 }}
+            >
               <div>
                 <h2 className="text-[30px] font-semibold text-[#111110] leading-[36px] tracking-[-0.3px]">
                   What are you building today?
@@ -211,7 +223,7 @@ const AllFormsPage = () => {
                 <RiAddLine size={14} />
                 New Form
               </motion.button>
-            </>
+            </motion.div>
           )}
         </div>
 
