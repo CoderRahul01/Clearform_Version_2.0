@@ -4,6 +4,7 @@ import SignupPage from '../pages/SignupPage';
 import SignInPage from '../pages/SignInPage';
 import AllFormsPage from '../pages/AllFormsPage';
 import TemplatesPage from '../pages/TemplatesPage';
+import FormBuilderPage from '../pages/FormBuilderPage';
 
 const AppRoutes = () => {
   return (
@@ -19,6 +20,9 @@ const AppRoutes = () => {
         <Route index element={<AllFormsPage />} />
         <Route path="templates" element={<TemplatesPage />} />
       </Route>
+
+      {/* Form builder — standalone layout (no MainLayout wrapper) */}
+      <Route path="/dashboard/form-builder" element={<FormBuilderPage />} />
     </Routes>
   );
 };

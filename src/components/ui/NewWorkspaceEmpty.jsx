@@ -1,4 +1,5 @@
 import { motion } from 'motion/react';
+import { useNavigate } from 'react-router-dom';
 import {
   RiAddLine,
   RiLayoutGridLine,
@@ -19,7 +20,9 @@ const QUICK_TEMPLATES = [
 
 const emptyEase = [0.25, 0.1, 0.25, 1];
 
-const NewWorkspaceEmpty = ({ workspaceName = 'Inc Corp' }) => (
+const NewWorkspaceEmpty = ({ workspaceName = 'Inc Corp' }) => {
+  const navigate = useNavigate();
+  return (
   <motion.div
     initial={{ opacity: 0, y: 8 }}
     animate={{ opacity: 1, y: 0 }}
@@ -41,6 +44,7 @@ const NewWorkspaceEmpty = ({ workspaceName = 'Inc Corp' }) => (
     <div className="flex items-center gap-3">
       <motion.button
         type="button"
+        onClick={() => navigate('/dashboard/form-builder')}
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
         transition={{ duration: 0.15 }}
@@ -88,6 +92,7 @@ const NewWorkspaceEmpty = ({ workspaceName = 'Inc Corp' }) => (
       </div>
     </div>
   </motion.div>
-);
+  );
+};
 
 export default NewWorkspaceEmpty;

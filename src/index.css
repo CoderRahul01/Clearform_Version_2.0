@@ -34,3 +34,54 @@ body {
 @keyframes shimmer {
   100% { transform: translateX(100%); }
 }
+
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+.label-marquee {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  text-align: center;
+}
+
+.label-marquee span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.label-marquee:hover span {
+  animation: marquee 2s linear infinite;
+  padding-left: 100%;
+}
+
+/* CTA configure panel range sliders */
+.cta-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+.cta-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #111;
+  cursor: pointer;
+  box-shadow: 0 0 0 2.5px white, 0 0 0 4px rgba(0, 0, 0, 0.12);
+}
+.cta-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #111;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 0 2.5px white, 0 0 0 4px rgba(0, 0, 0, 0.12);
+}

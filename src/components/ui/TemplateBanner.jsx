@@ -145,6 +145,7 @@ const TemplateBanner = ({ visible, isLoading }) => {
                         variants={itemVariants}
                         whileHover={{ scale: 1.05 }}
                         transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+                        onClick={() => navigate('/dashboard/form-builder')}
                         className="flex flex-col items-center justify-center gap-[8px] px-4 py-5 border-r border-[rgba(0,0,0,0.08)] w-[120px] shrink-0 hover:bg-[#f9f8f7] cursor-pointer relative z-10"
                       >
                         <div className="w-9 h-9 border border-dashed border-[rgba(0,0,0,0.14)] rounded-[9px] flex items-center justify-center">

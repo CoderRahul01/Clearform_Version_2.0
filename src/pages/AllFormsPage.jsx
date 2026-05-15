@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { RiAddLine, RiLayoutGridLine } from 'react-icons/ri';
 import {
@@ -33,7 +34,7 @@ import { useToast } from '../hooks/useToast';
 /* ── Empty state: no forms from filter ── */
 const pageEase = [0.25, 0.1, 0.25, 1];
 
-const FilterEmptyState = ({ hasFilters, onClearFilters }) => (
+const FilterEmptyState = ({ hasFilters, onClearFilters, onNewForm }) => (
   <motion.div
     initial={{ opacity: 0, y: 8 }}
     animate={{ opacity: 1, y: 0 }}
@@ -53,7 +54,10 @@ const FilterEmptyState = ({ hasFilters, onClearFilters }) => (
       </p>
     </div>
     <div className="flex items-center gap-4">
-      <button className="flex items-center gap-2 bg-[#1a1a1c] text-white text-[14px] font-medium px-[17px] py-[9px] rounded-lg hover:bg-[#2c2c2e] transition-colors cursor-pointer">
+      <button
+        onClick={onNewForm}
+        className="flex items-center gap-2 bg-[#1a1a1c] text-white text-[14px] font-medium px-[17px] py-[9px] rounded-lg hover:bg-[#2c2c2e] transition-colors cursor-pointer"
+      >
         <RiAddLine size={14} />
         New Form
       </button>
@@ -112,6 +116,7 @@ const GridView = ({ forms }) => (
 /* ── Page ── */
 const AllFormsPage = () => {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const shownTargetToastIdsRef = useRef(new Set());
   const filteredForms = useSelector(selectFilteredForms);
@@ -218,6 +223,7 @@ const AllFormsPage = () => {
               <motion.button
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
+                onClick={() => navigate('/dashboard/form-builder')}
                 className="flex items-center gap-2 bg-[#1a1a1c] text-white text-[14px] font-medium px-[17px] py-[9px] rounded-lg border border-[#1a1a1c] hover:bg-[#2c2c2e] transition-colors cursor-pointer shrink-0"
               >
                 <RiAddLine size={14} />
@@ -257,6 +263,7 @@ const AllFormsPage = () => {
                 key="empty"
                 hasFilters={hasActiveFilters}
                 onClearFilters={handleClearFilters}
+                onNewForm={() => navigate('/dashboard/form-builder')}
               />
             ) : viewMode === 'list' ? (
               <ListView key="list" forms={filteredForms} />
