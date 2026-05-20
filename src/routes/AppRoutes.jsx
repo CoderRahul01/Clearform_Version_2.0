@@ -1,10 +1,12 @@
 import { Routes, Route } from 'react-router-dom';
-import MainLayout from '../layouts/MainLayout';
-import SignupPage from '../pages/SignupPage';
-import SignInPage from '../pages/SignInPage';
-import AllFormsPage from '../pages/AllFormsPage';
-import TemplatesPage from '../pages/TemplatesPage';
-import FormBuilderPage from '../pages/FormBuilderPage';
+import MainLayout from '@/layouts/MainLayout';
+import SignupPage from '@/features/auth/pages/SignupPage';
+import SignInPage from '@/features/auth/pages/SignInPage';
+import AllFormsPage from '@/features/forms/pages/AllFormsPage';
+import TemplatesPage from '@/features/templates/pages/TemplatesPage';
+import FormBuilderPage from '@/features/forms/pages/FormBuilderPage';
+import HelpSupportPage from '@/features/support/pages/HelpSupportPage';
+import AnalyticsPage from '@/pages/AnalyticsPage';
 
 const AppRoutes = () => {
   return (
@@ -19,6 +21,8 @@ const AppRoutes = () => {
       <Route path="/dashboard" element={<MainLayout />}>
         <Route index element={<AllFormsPage />} />
         <Route path="templates" element={<TemplatesPage />} />
+        <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="help" element={<HelpSupportPage />} />
       </Route>
 
       {/* Form builder — standalone layout (no MainLayout wrapper) */}

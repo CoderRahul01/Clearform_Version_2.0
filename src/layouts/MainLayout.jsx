@@ -1,6 +1,6 @@
 import { Outlet, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import Sidebar from '../components/common/Sidebar';
+import Sidebar from '@/components/layout/Sidebar';
 
 const pageEase = [0.25, 0.1, 0.25, 1];
 

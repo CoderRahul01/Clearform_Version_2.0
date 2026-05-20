@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Arimo:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background-color: #f4f3ef;
+  margin: 0;
+  padding: 0;
+}
+
+/* Avoid native button fill (often dark) on custom toggle switches */
+button[role="switch"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c9c7bf;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a6a0;
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+.label-marquee {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  text-align: center;
+}
+
+.label-marquee span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.label-marquee:hover span {
+  animation: marquee 2s linear infinite;
+  padding-left: 100%;
+}
+
+/* CTA configure panel range sliders */
+.cta-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+.cta-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #111;
+  cursor: pointer;
+  box-shadow: 0 0 0 2.5px white, 0 0 0 4px rgba(0, 0, 0, 0.12);
+}
+.cta-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #111;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 0 2.5px white, 0 0 0 4px rgba(0, 0, 0, 0.12);
+}

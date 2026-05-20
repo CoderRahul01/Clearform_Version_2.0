@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { useDispatch } from 'react-redux';
-import { addToast } from '../redux/slices/toastSlice';
+import { addToast } from '@/store/slices/toastSlice';
 
 // Wrapped in useCallback so consumers can safely list `showToast` in
 // useEffect deps without triggering the effect on every parent render.
