@@ -1,5 +1,10 @@
 ﻿import { Fragment, useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
 import ToggleSwitch, { TOGGLE_TRACK_OFF, TOGGLE_TRACK_ON, toggleTrackClassName } from '@/components/ui/ToggleSwitch';
+import ResponseQualityScoringCard, {
+  DEFAULT_RESPONSE_QUALITY_OPTIONS,
+} from '@/features/forms/components/ResponseQualityScoringCard';
+import ResponseQualityFeedback from '@/features/forms/components/ResponseQualityFeedback';
+import { evaluateResponseQuality } from '@/features/forms/utils/responseQualityScoring';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { buildFormFromTemplate } from '@/features/templates/utils/buildFormFromTemplate';
 import {
@@ -605,7 +610,6 @@ const ACCORDION_SECTIONS = [
   { key: 'questionTemplates', label: 'Question Templates' },
   { key: 'fieldSettings', label: 'Field Settings' },
   { key: 'appearance', label: 'Appearance' },
-  { key: 'responseQuality', label: 'Response Quality Scoring' },
 ];
 
 /* â”€â”€ Question template categories â”€â”€ */
@@ -1862,6 +1866,7 @@ const ContentCard = ({
   workConfig,
   shortTextConfig,
   longTextConfig,
+  responseQualityConfig,
   singleConfig,
   multipleConfig,
   mediaConfig,
@@ -1941,6 +1946,13 @@ const ContentCard = ({
     const opts = mediaConfig?.mediaOptions || [];
     return mediaConfig?.mediaRandomiseOrder ? shuffleArray([...opts]) : opts;
   }, [mediaOptsKey, mediaConfig?.mediaRandomiseOrder]);
+
+  const responseQualityEvaluation = useMemo(() => {
+    if (!isPreviewMode || cardKey !== 'qualitative:Long text' || !responseQualityConfig?.enabled) {
+      return null;
+    }
+    return evaluateResponseQuality(longTextDraft, responseQualityConfig);
+  }, [isPreviewMode, cardKey, responseQualityConfig, longTextDraft]);
 
   const snapRef = useRef({});
   snapRef.current = {
@@ -2965,28 +2977,53 @@ const ContentCard = ({
             </p>
           )}
           <div className="mt-[19px]">
-            <div className="border border-[rgba(0,0,0,0.1)] rounded-[8px] px-4 py-3 min-h-[120px]">
-              {isPreviewMode ? (
-                <textarea
-                  value={longTextDraft}
-                  onChange={(e) => setLongTextDraft(e.target.value.slice(0, ltMaxChars))}
-                  maxLength={ltMaxChars}
-                  placeholder={ltPlaceholder}
-                  inputMode={ltInputMode}
-                  aria-label={ltQuestion}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  className={`w-full min-h-[100px] text-[14px] font-light text-[#111] bg-transparent outline-none border-0 resize-y placeholder:text-[#bbb] ${ltTextAlign}`}
+            {isPreviewMode && responseQualityConfig?.enabled ? (
+              <>
+                <div className="border-b-2 border-[rgba(0,0,0,0.12)] pb-[10px] pt-[8px]">
+                  <textarea
+                    value={longTextDraft}
+                    onChange={(e) => setLongTextDraft(e.target.value.slice(0, ltMaxChars))}
+                    maxLength={ltMaxChars}
+                    placeholder={ltPlaceholder}
+                    inputMode={ltInputMode}
+                    aria-label={ltQuestion}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    rows={3}
+                    className={`w-full min-h-[72px] text-[14px] font-light text-[#111] bg-transparent outline-none border-0 resize-none placeholder:text-[#bbb] ${ltTextAlign}`}
+                  />
+                </div>
+                <ResponseQualityFeedback
+                  evaluation={responseQualityEvaluation}
+                  charCount={longTextDraft.length}
+                  maxChars={ltMaxChars}
                 />
-              ) : (
-                <p className={`text-[#bbb] text-[14px] font-light ${ltTextAlign}`}>{ltPlaceholder}</p>
-              )}
-            </div>
-            <div className="flex justify-between items-center pt-[11px] pb-[9px]">
-              <p className="text-[#bbb] text-[11px]">Long answer</p>
-              <p className="text-[#bbb] text-[11px]">
-                {isPreviewMode ? longTextDraft.length : 0}{ltMinChars > 0 && isPreviewMode ? ` (min ${ltMinChars})` : ''} / {ltMaxChars}
-              </p>
-            </div>
+              </>
+            ) : (
+              <>
+                <div className="border border-[rgba(0,0,0,0.1)] rounded-[8px] px-4 py-3 min-h-[120px]">
+                  {isPreviewMode ? (
+                    <textarea
+                      value={longTextDraft}
+                      onChange={(e) => setLongTextDraft(e.target.value.slice(0, ltMaxChars))}
+                      maxLength={ltMaxChars}
+                      placeholder={ltPlaceholder}
+                      inputMode={ltInputMode}
+                      aria-label={ltQuestion}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className={`w-full min-h-[100px] text-[14px] font-light text-[#111] bg-transparent outline-none border-0 resize-y placeholder:text-[#bbb] ${ltTextAlign}`}
+                    />
+                  ) : (
+                    <p className={`text-[#bbb] text-[14px] font-light ${ltTextAlign}`}>{ltPlaceholder}</p>
+                  )}
+                </div>
+                <div className="flex justify-between items-center pt-[11px] pb-[9px]">
+                  <p className="text-[#bbb] text-[11px]">Long answer</p>
+                  <p className="text-[#bbb] text-[11px]">
+                    {isPreviewMode ? longTextDraft.length : 0}{ltMinChars > 0 && isPreviewMode ? ` (min ${ltMinChars})` : ''} / {ltMaxChars}
+                  </p>
+                </div>
+              </>
+            )}
           </div>
         </div>
         {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
@@ -3749,7 +3786,6 @@ const FormBuilderPage = () => {
     questionTemplates: false,
     fieldSettings: false,
     appearance: false,
-    responseQuality: false,
   });
 
   /* â”€â”€ Welcome screen field-settings state â”€â”€ */
@@ -3767,8 +3803,8 @@ const FormBuilderPage = () => {
   const welcomeInputTypeRef = useRef(null);
 
   /* â”€â”€ Response quality scoring state â”€â”€ */
-  const [responseQualityEnabled, setResponseQualityEnabled] = useState(true);
-  const [responseQualityGenerated, setResponseQualityGenerated] = useState(false);
+  const [responseQualityEnabled, setResponseQualityEnabled] = useState(false);
+  const [responseQualityOptions, setResponseQualityOptions] = useState(DEFAULT_RESPONSE_QUALITY_OPTIONS);
 
   /* â”€â”€ Content panel state â”€â”€ */
   const [showContentPanel, setShowContentPanel] = useState(false);
@@ -3949,7 +3985,7 @@ const FormBuilderPage = () => {
   const [longTextValidation, setLongTextValidation] = useState('None');
   const [longTextSize, setLongTextSize] = useState('M');
   const [longTextAlign, setLongTextAlign] = useState('left');
-  const [longTextSections, setLongTextSections] = useState({ fieldSettings: true, appearance: true, conditionalLogic: false });
+  const [longTextSections, setLongTextSections] = useState({ fieldSettings: true, appearance: true, conditionalLogic: false, responseQuality: false });
 
   /* â”€â”€ Multiple choice configure panel state â”€â”€ */
   const [showMultipleConfigPanel, setShowMultipleConfigPanel] = useState(false);
@@ -7131,6 +7167,7 @@ const FormBuilderPage = () => {
                               workConfig={{ workQuestion, workHelperText, workFields, workRequired }}
                               shortTextConfig={{ shortTextQuestion, shortTextHelperText, shortTextPlaceholder, shortTextMaxChars, shortTextMinChars, shortTextValidation, shortTextAlign, shortTextSize, shortTextRequired, shortTextHidden }}
                               longTextConfig={{ longTextQuestion, longTextHelperText, longTextPlaceholder, longTextMaxChars, longTextMinChars, longTextValidation, longTextAlign, longTextSize, longTextRequired, longTextHidden }}
+                              responseQualityConfig={{ enabled: responseQualityEnabled, options: responseQualityOptions }}
                               singleConfig={{ singleQuestion, singleHelperText, singleOptions, singleLayout, singleOptionHeight, singleRequired, singleAllowOther, singleRandomize, singleMultipleSelect, singleMinChoices, singleMaxChoices, singleShowKeyboardHints, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowSingleConfigPanel(true), 300); } }}
                               multipleConfig={{ multipleQuestion, multipleHelperText, multipleOptions, multipleLayout, multipleRequired, multipleAllowOther, multipleRandomize, multipleMultipleSelect, multipleMinChoices, multipleMaxChoices, multipleShowKeyboardHints, multipleOptionHeight, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowMultipleConfigPanel(true), 300); } }}
                               mediaConfig={{ mediaQuestion, mediaHelperText, mediaOptions, mediaAllowMultiple, mediaRequired, mediaRandomiseOrder, mediaMinChoices, mediaMaxChoices, mediaLayout, mediaOptionHeight }}
@@ -7349,6 +7386,7 @@ const FormBuilderPage = () => {
                             workConfig={{ workQuestion, workHelperText, workFields, workRequired }}
                             shortTextConfig={{ shortTextQuestion, shortTextHelperText, shortTextPlaceholder, shortTextMaxChars, shortTextMinChars, shortTextValidation, shortTextAlign, shortTextSize, shortTextRequired, shortTextHidden }}
                             longTextConfig={{ longTextQuestion, longTextHelperText, longTextPlaceholder, longTextMaxChars, longTextMinChars, longTextValidation, longTextAlign, longTextSize, longTextRequired, longTextHidden }}
+                            responseQualityConfig={{ enabled: responseQualityEnabled, options: responseQualityOptions }}
                             singleConfig={{ singleQuestion, singleHelperText, singleOptions, singleLayout, singleOptionHeight, singleRequired, singleAllowOther, singleRandomize, singleMultipleSelect, singleMinChoices, singleMaxChoices, singleShowKeyboardHints, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowSingleConfigPanel(true), 300); } }}
                             multipleConfig={{ multipleQuestion, multipleHelperText, multipleOptions, multipleLayout, multipleRequired, multipleAllowOther, multipleRandomize, multipleMultipleSelect, multipleMinChoices, multipleMaxChoices, multipleShowKeyboardHints, multipleOptionHeight, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowMultipleConfigPanel(true), 300); } }}
                             mediaConfig={{ mediaQuestion, mediaHelperText, mediaOptions, mediaAllowMultiple, mediaRequired, mediaRandomiseOrder, mediaMinChoices, mediaMaxChoices, mediaLayout, mediaOptionHeight }}
@@ -8063,77 +8101,6 @@ const FormBuilderPage = () => {
                       </motion.div>
                     )}
 
-                    {/* Response Quality Scoring expanded content */}
-                    {key === 'responseQuality' && sections.responseQuality && (
-                      <motion.div
-                        key="rq-content"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        <div className="px-4 pt-[6px] pb-[14px]">
-                          <div className="bg-[#f7f7f5] border border-[#e4e3de] rounded-[10px] overflow-hidden">
-                            {/* Card header */}
-                            <div className="bg-white border-b border-[#e4e3de] flex items-center justify-between px-[14px] py-[12px]">
-                              <div className="flex items-center gap-[8px]">
-                                <div className="w-[28px] h-[28px] bg-[#1a1a18] rounded-[7px] flex items-center justify-center shrink-0">
-                                  <RiRobot2Line size={14} className="text-white" />
-                                </div>
-                                <div className="flex flex-col gap-[1px]">
-                                  <span className="text-[13px] font-semibold text-[#1a1a18] leading-normal">Response quality</span>
-                                  <span className="text-[11px] text-[#717171] font-normal leading-tight">AI scores answers before you open them</span>
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => setResponseQualityEnabled((p) => !p)}
-                                className={`relative w-[30px] h-[17px] rounded-[99px] transition-colors cursor-pointer shrink-0 appearance-none border-0 p-0 ${toggleTrackClassName(responseQualityEnabled)}`}
-                              >
-                                <span
-                                  className={`absolute top-[3px] w-[11px] h-[11px] bg-white rounded-[5.5px] transition-all duration-200 ${responseQualityEnabled ? 'left-[16px]' : 'left-[3px]'}`}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Card body */}
-                            <div className="flex flex-col gap-[12px] items-center px-[14px] py-[20px]">
-                              {/* Icon */}
-                              <div className="w-[44px] h-[44px] bg-[#f5f3ff] border border-[#ddd6fe] rounded-[12px] flex items-center justify-center">
-                                <RiStarLine size={22} className="text-[#7c3aed]" />
-                              </div>
-
-                              {/* Text */}
-                              <div className="flex flex-col gap-[4px] items-center">
-                                <span className="text-[13px] font-semibold text-[#1a1a18] leading-normal">Set up in one click</span>
-                                <p className="text-[11.5px] text-[#6b6b67] font-normal leading-[17.25px] text-center max-w-[220px]">
-                                  AI reads your questions and generates what a good answer looks like â€” you just review.
-                                </p>
-                              </div>
-
-                              {/* Generate button */}
-                              <button
-                                onClick={() => setResponseQualityGenerated((p) => !p)}
-                                className={`w-full flex items-center justify-center gap-[6px] text-[12px] font-medium px-[18px] py-[9px] rounded-[7px] cursor-pointer transition-colors ${
-                                  responseQualityGenerated
-                                    ? 'bg-[#1a9e4a] text-white hover:bg-[#178c41]'
-                                    : 'bg-[#1a1a18] text-white hover:bg-[#2c2c2c]'
-                                }`}
-                              >
-                                <RiStarLine size={13} className="shrink-0" />
-                                {responseQualityGenerated ? 'Answers generated âœ“' : 'Generate ideal answers'}
-                              </button>
-
-                              {/* Footer note */}
-                              <div className="flex items-center gap-[4px]">
-                                <RiInformationLine size={11} className="text-[#717171] shrink-0" />
-                                <span className="text-[10.5px] text-[#717171] font-normal">Based on your 3 form questions</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
                   </AnimatePresence>
                 </div>
               ))}
@@ -10821,6 +10788,30 @@ const FormBuilderPage = () => {
                                 ))}
                               </div>
                             </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="border-t border-[rgba(0,0,0,0.06)]">
+                    <button onClick={() => setLongTextSections((p) => ({ ...p, responseQuality: !p.responseQuality }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
+                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>RESPONSE QUALITY SCORING</span>
+                      <motion.span animate={{ rotate: longTextSections.responseQuality ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
+                        <RiArrowDownSLine size={14} className="text-[#999]" />
+                      </motion.span>
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {longTextSections.responseQuality && (
+                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden w-full">
+                          <div className="w-full">
+                            <ResponseQualityScoringCard
+                              enabled={responseQualityEnabled}
+                              onEnabledChange={setResponseQualityEnabled}
+                              options={responseQualityOptions}
+                              onOptionsChange={setResponseQualityOptions}
+                              onSave={() => {}}
+                            />
                           </div>
                         </motion.div>
                       )}
