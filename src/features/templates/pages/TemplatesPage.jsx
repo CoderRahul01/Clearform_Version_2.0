@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { motion, AnimatePresence } from 'motion/react';
 import { RiSearchLine, RiCloseLine, RiTimeLine } from 'react-icons/ri';
 import TemplatesSkeleton from '../components/TemplatesSkeleton';
@@ -22,6 +22,7 @@ import {
 } from '../utils/templateFilters';
 import { useToast } from '@/hooks/useToast';
 import OnboardingTemplatePreviewModal from '@/features/onboarding/components/OnboardingTemplatePreviewModal';
+import { navigateToFormBuilder } from '@/features/forms/utils/navigateToFormBuilder';
 
 const PLAN_LIMIT = 10;
 const CREATE_LATENCY_MS = 1600;
@@ -104,6 +105,7 @@ const TemplatesPage = () => {
   const inputRef = useRef(null);
   const searchContainerRef = useRef(null);
   const { showToast } = useToast();
+  const dispatch = useDispatch();
   const navigate = useNavigate();
 
   const isAtLimit = formsCount >= PLAN_LIMIT;
@@ -202,9 +204,12 @@ const TemplatesPage = () => {
     loadingTimerRef.current = setTimeout(() => {
       setLoadingTemplateId(null);
       loadingTimerRef.current = null;
-      navigate('/dashboard/form-builder', {
-        state: { templateId: template.id, templateTitle: template.title },
-      });
+      navigateToFormBuilder(
+        navigate,
+        dispatch,
+        { templateId: template.id, templateTitle: template.title },
+        { minDelayMs: 0 },
+      );
     }, CREATE_LATENCY_MS);
   };
 

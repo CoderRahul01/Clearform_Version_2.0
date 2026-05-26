@@ -1,7 +1,7 @@
 import { useDispatch, useSelector } from 'react-redux';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   RiLayoutGridLine,
   RiAddLine,
@@ -10,14 +10,16 @@ import {
   RiQuestionLine,
   RiArrowLeftSLine,
 } from 'react-icons/ri';
-import { setActiveWorkspace } from '@/store/slices/formsSlice';
+import {
+  setActiveWorkspace,
+  selectNavWorkspaces,
+  selectTotalFormCount,
+} from '@/store/slices/formsSlice';
 import { readProfileSettings } from '@/features/profile/utils/profileSettingsStorage';
 import { openCreateWorkspaceModal, openWorkspaceContextMenu } from '@/store/slices/uiSlice';
 import clearformLogo from '@/assets/clearform-high-resolution-logo-transparent.png';
 import clearformLogoIcon from '@/assets/clearform-high-resolution-logo-transparent (1).png';
 import SidebarSkeleton from './SidebarSkeleton';
-
-const SKELETON_DURATION = 1200;
 
 const getProfileDisplay = ({ firstName, lastName, email, displayName: savedName }) => {
   const saved = savedName?.trim();
@@ -85,7 +87,7 @@ const NavItem = ({ icon: Icon, label, badge, active, onClick }) => (
     whileHover={{ backgroundColor: '#f4f3ef' }}
     onClick={onClick}
     className={`w-full flex items-center justify-between px-4 py-2 rounded-lg cursor-pointer transition-colors ${
-      active ? 'bg-[#f4f3ef]' : ''
+      active ? 'bg-[#f4f3ef] shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : ''
     }`}
   >
     <div className="flex items-center gap-2">
@@ -112,7 +114,7 @@ const WorkspaceItem = ({ workspace, active, onClick, onContextMenu }) => (
     onClick={onClick}
     onContextMenu={onContextMenu}
     className={`w-full flex items-center justify-between px-4 py-2 rounded-lg cursor-pointer transition-colors ${
-      active ? 'bg-[#f4f3ef]' : ''
+      active ? 'bg-[#f4f3ef] shadow-[0_1px_3px_rgba(0,0,0,0.08)]' : ''
     }`}
   >
     <div className="flex items-center gap-2">
@@ -126,9 +128,11 @@ const WorkspaceItem = ({ workspace, active, onClick, onContextMenu }) => (
         {workspace.label}
       </span>
     </div>
-    <span className="text-[12px] font-medium text-[#a8a6a0] leading-[18px]">
-      {workspace.count}
-    </span>
+    {typeof workspace.count === 'number' && workspace.count > 0 ? (
+      <span className="text-[12px] font-medium text-[#a8a6a0] leading-[18px]">
+        {workspace.count}
+      </span>
+    ) : null}
   </motion.button>
 );
 
@@ -175,7 +179,7 @@ const HelpSupportNavButton = ({ expanded, active, onClick }) => {
   );
 };
 
-const Sidebar = ({ hideLogo = false }) => {
+const Sidebar = ({ hideLogo = false, exit }) => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const location = useLocation();
@@ -187,13 +191,15 @@ const Sidebar = ({ hideLogo = false }) => {
     email,
     displayName: savedProfile?.displayName,
   });
-  const { activeWorkspace, workspaces } = useSelector((state) => state.forms);
+  const { activeWorkspace, isLoading: formsLoading } = useSelector((state) => state.forms);
+  const workspaces = useSelector(selectNavWorkspaces);
 
   const handleWorkspaceContextMenu = (e, wsId) => {
     e.preventDefault();
     dispatch(openWorkspaceContextMenu({ workspaceId: wsId, x: e.clientX, y: e.clientY }));
   };
-  const totalForms = useSelector((state) => state.forms.forms.length);
+  const totalFormCount = useSelector(selectTotalFormCount);
+  const showFormCounts = !formsLoading;
 
   const isTemplatesActive = location.pathname === '/dashboard/templates';
   const isAnalyticsActive = location.pathname.startsWith('/dashboard/analytics');
@@ -205,24 +211,20 @@ const Sidebar = ({ hideLogo = false }) => {
     !isHelpSupportActive &&
     !isProfileActive;
 
-  const isFormBuilder = location.pathname.startsWith('/dashboard/form-builder');
+  const showSidebarSkeleton = isDashboardActive && formsLoading;
 
-  const [loading, setLoading] = useState(true);
-  const [isCollapsed, setIsCollapsed] = useState(isFormBuilder);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setLoading(false), SKELETON_DURATION);
-    return () => clearTimeout(timer);
-  }, []);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   return (
     <motion.aside
-      animate={{ width: isCollapsed ? 60 : 196 }}
+      initial={{ opacity: 1, x: 0 }}
+      animate={{ width: isCollapsed ? 60 : 196, opacity: 1, x: 0 }}
+      exit={exit ?? { opacity: 0, x: -20, transition: { duration: 0.2, ease: 'easeIn' } }}
       transition={{ duration: 0.2, ease: 'easeInOut' }}
       className="relative shrink-0 bg-white border-r border-[rgba(0,0,0,0.08)] flex flex-col h-full"
     >
       {/* Collapse / expand button — sits on the right border, aligned with "All Forms" */}
-      {!loading && (
+      {!showSidebarSkeleton && (
         <button
           onClick={() => setIsCollapsed((v) => !v)}
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -235,7 +237,7 @@ const Sidebar = ({ hideLogo = false }) => {
         </button>
       )}
       <AnimatePresence mode="sync" initial={false}>
-        {loading ? (
+        {showSidebarSkeleton ? (
           <motion.div
             key="skeleton"
             className="flex flex-col h-full overflow-hidden"
@@ -307,17 +309,17 @@ const Sidebar = ({ hideLogo = false }) => {
 
               {/* Footer */}
               <div className="border-t border-[rgba(0,0,0,0.08)] px-[10px] pb-[14px] pt-[11px] flex flex-col gap-[2px] shrink-0">
+                <HelpSupportNavButton
+                  expanded={false}
+                  active={isHelpSupportActive}
+                  onClick={() => navigate('/dashboard/help')}
+                />
                 <ProfileFooter
                   expanded={false}
                   active={isProfileActive}
                   {...profile}
                   email={email}
                   onClick={() => navigate('/dashboard/profile')}
-                />
-                <HelpSupportNavButton
-                  expanded={false}
-                  active={isHelpSupportActive}
-                  onClick={() => navigate('/dashboard/help')}
                 />
               </div>
             </div>
@@ -349,7 +351,9 @@ const Sidebar = ({ hideLogo = false }) => {
               <NavItem
                 icon={RiLayoutGridLine}
                 label="All forms"
-                badge={totalForms}
+                badge={
+                  showFormCounts && totalFormCount > 0 ? totalFormCount : undefined
+                }
                 active={isDashboardActive && activeWorkspace === 'all'}
                 onClick={() => {
                   navigate('/dashboard');
@@ -364,7 +368,9 @@ const Sidebar = ({ hideLogo = false }) => {
               {workspaces.map((ws) => (
                 <WorkspaceItem
                   key={ws.id}
-                  workspace={ws}
+                  workspace={
+                    showFormCounts ? ws : { ...ws, count: 0 }
+                  }
                   active={isDashboardActive && activeWorkspace === ws.id}
                   onClick={() => {
                     navigate('/dashboard');
@@ -415,17 +421,17 @@ const Sidebar = ({ hideLogo = false }) => {
 
             {/* Utility corner */}
             <div className="border-t border-[#e5e3dc] px-2 py-[14px] flex flex-col gap-px shrink-0">
+              <HelpSupportNavButton
+                expanded
+                active={isHelpSupportActive}
+                onClick={() => navigate('/dashboard/help')}
+              />
               <ProfileFooter
                 expanded
                 active={isProfileActive}
                 {...profile}
                 email={email}
                 onClick={() => navigate('/dashboard/profile')}
-              />
-              <HelpSupportNavButton
-                expanded
-                active={isHelpSupportActive}
-                onClick={() => navigate('/dashboard/help')}
               />
             </div>
           </motion.div>

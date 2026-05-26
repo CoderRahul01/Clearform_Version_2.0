@@ -13,184 +13,20 @@ import { closeFormOverlay } from '@/store/slices/uiSlice';
 import { setFormPause, clearFormPause, unarchiveForm } from '@/store/slices/formsSlice';
 import { isFormPaused } from '../utils/formPause';
 import { formatResponseCount } from '@/constants';
-import { FORM_BUILDER_PATH, getFormBuilderState } from '../utils/formBuilderNavigation';
-
-/* ── Skeleton shimmer helper ── */
-const shimmer =
-  'relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.65),transparent)]';
-const S = ({ className = '' }) => (
-  <div className={`bg-[#e5e3dc] ${shimmer} ${className}`} />
-);
-
-/* ── Form overview skeleton (shown while form data loads) ── */
-const FormOverlayModalSkeleton = () => (
-  <div className="bg-white border border-[#e5e3dc] rounded-[16px] w-[574px] overflow-hidden">
-    {/* Header */}
-    <div className="bg-[#f4f3ef] border-b border-[#e5e3dc] px-[20px] pt-[20px] pb-[17px]">
-      <div className="flex items-start justify-between">
-        {/* Left: icon + title + meta */}
-        <div className="flex items-start gap-[16px]">
-          <S className="w-[35px] h-[37px] rounded-[4px] shrink-0" />
-          <div className="flex flex-col gap-[4px]">
-            <S className="w-[196px] h-[19px] rounded-[4px]" />
-            <div className="flex items-center gap-[8px] mt-[4px]">
-              <S className="w-[53px] h-[9px] rounded-[4px]" />
-              <span className="text-[#ddd] text-[12px]">·</span>
-              <S className="w-[51px] h-[9px] rounded-[4px]" />
-              <span className="text-[#ddd] text-[12px]">·</span>
-              <S className="w-[74px] h-[9px] rounded-[4px]" />
-            </div>
-          </div>
-        </div>
-        {/* Right: action buttons */}
-        <div className="flex items-center gap-[8px] shrink-0">
-          <S className="w-[80px] h-[36px] rounded-[4px]" />
-          <S className="w-[100px] h-[36px] rounded-[4px]" />
-        </div>
-      </div>
-    </div>
-
-    {/* Tabs */}
-    <div className="border-b border-[#e5e3dc] px-[24px] py-[12px] flex items-center justify-center gap-[20px]">
-      <S className="w-[74px] h-[9px] rounded-[4px]" />
-      <S className="w-[74px] h-[9px] rounded-[4px]" />
-    </div>
-
-    {/* Content */}
-    <div className="px-[24px] py-[20px] flex flex-col gap-[16px]">
-      {/* KPI row — 3 stat cards */}
-      <div className="grid grid-cols-3 gap-[12px]">
-        {[0, 1, 2].map((i) => (
-          <div
-            key={i}
-            className="bg-[#f4f3ef] border border-[#e5e3dc] rounded-[12px] px-[17px] py-[13px] flex flex-col gap-[8px]"
-          >
-            <S className="w-[74px] h-[9px] rounded-[4px]" />
-            <S className="w-[54px] h-[26px] rounded-[4px]" />
-          </div>
-        ))}
-      </div>
-
-      {/* Survey target + Live since row */}
-      <div className="grid grid-cols-2 gap-[12px]">
-        {/* Survey target */}
-        <div className="bg-[#f4f3ef] border border-[#e5e3dc] rounded-[12px] p-[17px] flex flex-col gap-[12px]">
-          <S className="w-[135px] h-[11px] rounded-[4px]" />
-          <div className="flex items-center gap-[12px]">
-            <S className="w-[52px] h-[52px] rounded-full shrink-0" />
-            <div className="flex flex-col gap-[6px] flex-1 min-w-0">
-              <S className="w-full h-[5px] rounded-[4px]" />
-              <S className="w-[97px] h-[9px] rounded-[4px]" />
-            </div>
-          </div>
-        </div>
-        {/* Live since */}
-        <div className="bg-[#f4f3ef] border border-[#e5e3dc] rounded-[12px] p-[17px] flex flex-col gap-[12px]">
-          <S className="w-[135px] h-[11px] rounded-[4px]" />
-          <div className="flex items-center gap-[12px]">
-            <S className="w-[52px] h-[52px] rounded-[12px] shrink-0" />
-            <S className="flex-1 h-[36px] rounded-[4px] min-w-0" />
-          </div>
-        </div>
-      </div>
-
-      {/* AI insight block */}
-      <S className="w-full h-[64px] rounded-[12px]" />
-    </div>
-  </div>
-);
-
-/* ── KPI stat card ──
-   sub        = green ↑ trend line  (e.g. "5% this week")
-   subNeutral = gray  ~ neutral line (e.g. "~ same")
-*/
-const StatCard = ({ label, value, sub, subNeutral, note }) => (
-  <div className="bg-[#fafaf8] border border-[#e8e6e0] rounded-[10px] p-[11px] flex flex-col gap-[3px] flex-1">
-    <p className="text-[10px] font-normal text-[#737373] leading-normal">{label}</p>
-    <p className="text-[22px] font-bold text-[#1a1a1a] leading-tight">{value}</p>
-    {sub && (
-      <p className="text-[9.5px] font-normal text-[#16a34a] leading-normal">↑ {sub}</p>
-    )}
-    {subNeutral && (
-      <p className="text-[9.5px] font-normal text-[#737373] leading-normal">{subNeutral}</p>
-    )}
-    <div className="h-px bg-[#e8e6e0] w-full my-[2px]" />
-    {note && (
-      <p className="text-[10px] font-normal text-[#5b21b6] leading-normal">{note}</p>
-    )}
-  </div>
-);
-
-/* ── Progress ring (62×62 outer, 8px stroke) ── */
-const ProgressRing = ({ pct }) => {
-  const r = 23;
-  const circ = 2 * Math.PI * r;
-  const offset = circ - (pct / 100) * circ;
-  return (
-    <svg width="62" height="62" className="block -rotate-90">
-      <circle cx="31" cy="31" r={r} strokeWidth="8" stroke="#ede7ff" fill="none" />
-      <circle
-        cx="31" cy="31" r={r}
-        strokeWidth="8" stroke="#7c3aed" fill="none"
-        strokeLinecap="round"
-        strokeDasharray={circ}
-        strokeDashoffset={offset}
-        style={{ transition: 'stroke-dashoffset 0.6s ease' }}
-      />
-    </svg>
-  );
-};
-
-/* ── White pill row at bottom of lower cards ── */
-const PillRow = ({ text }) => (
-  <div className="bg-white border border-[rgba(0,0,0,0.05)] rounded-[10px] px-[8px] py-[4px] w-full flex items-center justify-center">
-    <p className="text-[12px] font-medium text-[#737373] leading-[19.5px] whitespace-nowrap">{text}</p>
-  </div>
-);
-
-const PAUSE_OPTIONS = [
-  { id: '1hr',        label: 'For 1 hr' },
-  { id: '8hrs',       label: 'For 8 hrs' },
-  { id: '24hrs',      label: 'For 24 hrs' },
-  { id: 'indefinite', label: 'Until I turn it back on' },
-];
-
-const MONTH_NAMES = ['January','February','March','April','May','June',
-  'July','August','September','October','November','December'];
-const DAY_HEADERS = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-
-function formatTimeRemaining(pauseSettings) {
-  if (!pauseSettings?.confirmed) return null;
-  const { pauseType, endTimestamp } = pauseSettings;
-  if (pauseType === 'permanent' || pauseType === 'indefinite' || !endTimestamp) return null;
-  const ms = endTimestamp - Date.now();
-  if (ms <= 0) return null;
-  const totalMinutes = Math.floor(ms / 60000);
-  const totalHours = Math.floor(totalMinutes / 60);
-  if (totalHours >= 24) {
-    const days = Math.floor(totalHours / 24);
-    const hours = totalHours % 24;
-    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-  }
-  const minutes = totalMinutes % 60;
-  if (totalHours > 0) return `${totalHours}h ${minutes}m`;
-  return `${minutes}m`;
-}
-
-function buildCalendarGrid(year, month) {
-  const firstDay = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const daysInPrev  = new Date(year, month, 0).getDate();
-  const cells = [];
-  for (let i = firstDay - 1; i >= 0; i--)
-    cells.push({ day: daysInPrev - i, type: 'prev' });
-  for (let d = 1; d <= daysInMonth; d++)
-    cells.push({ day: d, type: 'cur' });
-  const remaining = 42 - cells.length;
-  for (let d = 1; d <= remaining; d++)
-    cells.push({ day: d, type: 'next' });
-  return cells;
-}
+import { getFormBuilderState } from '../utils/formBuilderNavigation';
+import { navigateToFormBuilder } from '../utils/navigateToFormBuilder';
+import { useFormOverlayMetrics } from '@/hooks/useFormOverlayMetrics';
+import FormOverlayModalSkeleton from '@/features/forms/components/formOverlay/FormOverlayModalSkeleton';
+import {
+  StatCard,
+  ProgressRing,
+  PillRow,
+  PAUSE_OPTIONS,
+  MONTH_NAMES,
+  DAY_HEADERS,
+  formatTimeRemaining,
+  buildCalendarGrid,
+} from '@/features/forms/components/formOverlay/formOverlayParts';
 
 const FormOverlayModal = () => {
   const dispatch = useDispatch();
@@ -225,13 +61,20 @@ const FormOverlayModal = () => {
     if (formId === prevFormIdRef.current) return;   // same form reopened — keep state
     prevFormIdRef.current = formId;
 
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-      // ~25% chance of simulated fetch failure (only for live forms with data)
-      if (form?.responses > 0 && form?.status === 'live' && !form?.pauseSettings?.confirmed && Math.random() < 0.25) {
-        setFetchError(true);
-      }
-    }, 700);
+    let frame2;
+    const frame1 = requestAnimationFrame(() => {
+      frame2 = requestAnimationFrame(() => {
+        setIsLoading(false);
+        if (
+          form?.responses > 0 &&
+          form?.status === 'live' &&
+          !form?.pauseSettings?.confirmed &&
+          Math.random() < 0.25
+        ) {
+          setFetchError(true);
+        }
+      });
+    });
 
     queueMicrotask(() => {
       if (form?.pauseSettings?.confirmed && !isFormPaused(form)) {
@@ -261,7 +104,10 @@ const FormOverlayModal = () => {
       }
     });
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelAnimationFrame(frame1);
+      if (frame2) cancelAnimationFrame(frame2);
+    };
   }, [formId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const calCells    = buildCalendarGrid(viewYear, viewMonth);
@@ -276,19 +122,23 @@ const FormOverlayModal = () => {
     else setViewMonth(m => m + 1);
   };
 
-  const completionPct = form && form.responses > 0 ? Math.round((form.responses / 500) * 100) : 0;
-  const limitNum      = parseInt(responseLimit) || 0;
-  const limitReached  = limitNum > 0 && !!form && form.responses >= limitNum;
-  const limitPct      = limitNum > 0 && !!form ? Math.min(100, Math.round((form.responses / limitNum) * 100)) : 0;
-  const nearLimit     = limitNum > 0 && !!form && !limitReached && limitPct >= 75;
-  const remaining     = limitNum > 0 && !!form ? Math.max(0, limitNum - form.responses) : 0;
-  const avgRate       = form?.daysActive ? (form.responses / form.daysActive).toFixed(1) : null;
-  const daysToTarget  = avgRate && remaining > 0 ? Math.round(remaining / parseFloat(avgRate)) : null;
+  const {
+    completionPct,
+    limitNum,
+    limitReached,
+    limitPct,
+    nearLimit,
+    remaining,
+    avgRate,
+    daysToTarget,
+  } = useFormOverlayMetrics(form, responseLimit);
 
   const handleRetry = () => {
     setFetchError(false);
     setIsLoading(true);
-    setTimeout(() => setIsLoading(false), 700);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => setIsLoading(false));
+    });
   };
 
   const handleConfirmPause = () => {
@@ -388,7 +238,7 @@ const FormOverlayModal = () => {
                     This form is still a draft
                   </p>
                   <p className="text-[12px] text-[#888] leading-[19.5px] text-center max-w-[370px] mt-[2px]">
-                    Publish your form to start collecting responses and see performance data here.
+                    Finish building your form in the editor, then publish when you&apos;re ready.
                   </p>
                 </div>
 
@@ -397,16 +247,16 @@ const FormOverlayModal = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      const builderState = getFormBuilderState(form, { startInPublishView: true });
+                      const builderState = getFormBuilderState(form);
                       if (builderState) {
                         dispatch(closeFormOverlay());
-                        navigate(FORM_BUILDER_PATH, { state: builderState });
+                        navigateToFormBuilder(navigate, dispatch, builderState);
                       }
                     }}
                     className="flex items-center gap-[4px] bg-[#1a1a1c] text-white text-[12px] font-medium h-[36px] px-[13px] rounded-[8px] hover:bg-[#2c2c2e] transition-colors cursor-pointer whitespace-nowrap"
                   >
                     <RiPencilLine size={14} />
-                    Finish &amp; Publish
+                    Continue in builder
                   </button>
                   <button
                     type="button"
@@ -414,7 +264,7 @@ const FormOverlayModal = () => {
                       const builderState = getFormBuilderState(form, { preview: true });
                       if (builderState) {
                         dispatch(closeFormOverlay());
-                        navigate(FORM_BUILDER_PATH, { state: builderState });
+                        navigateToFormBuilder(navigate, dispatch, builderState);
                       }
                     }}
                     className="flex items-center gap-[4px] bg-white text-[#333] text-[12.4px] font-medium h-[36px] px-[13px] rounded-[8px] border border-[#e0ddd8] hover:bg-[#f4f3ef] transition-colors cursor-pointer whitespace-nowrap"
@@ -505,7 +355,7 @@ const FormOverlayModal = () => {
                     const builderState = getFormBuilderState(form);
                     if (builderState) {
                       dispatch(closeFormOverlay());
-                      navigate(FORM_BUILDER_PATH, { state: builderState });
+                      navigateToFormBuilder(navigate, dispatch, builderState);
                     }
                   }}
                   className="flex items-center gap-1.5 px-3 py-[6px] text-[12px] font-medium text-[#1a1a1c] border border-[rgba(0,0,0,0.1)] rounded-[8px] hover:bg-[#f4f3ef] transition-colors cursor-pointer whitespace-nowrap"

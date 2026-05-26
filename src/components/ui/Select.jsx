@@ -46,7 +46,7 @@ export function Select({
 
         <RadixSelect.Portal>
           <RadixSelect.Content
-            className={contentBase}
+            className={`${contentBase} origin-top`}
             position="popper"
             sideOffset={6}
             align="start"

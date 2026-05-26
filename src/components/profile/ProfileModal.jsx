@@ -1,39 +1,56 @@
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
+import {
+  createFormModalTransition,
+  modalEnter,
+  modalExit,
+  modalInitial,
+} from '@/constants/premiumTransition';
 
-const ease = [0.25, 0.1, 0.25, 1];
-
-export default function ProfileModal({ open, onClose, children, className = '', widthClass = 'w-[min(100%,440px)]' }) {
+export default function ProfileModal({
+  open,
+  onClose,
+  children,
+  className = '',
+  widthClass = 'w-[min(100%,440px)]',
+}) {
   if (typeof document === 'undefined') return null;
 
   return createPortal(
     <AnimatePresence>
       {open ? (
         <>
-          <motion.button
-            type="button"
-            aria-label="Close dialog"
+          <motion.div
+            key="profile-modal-backdrop"
+            aria-hidden
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
+            transition={createFormModalTransition}
             onClick={onClose}
-            className="fixed inset-0 z-[9998] cursor-default border-0 bg-black/20"
+            className="fixed inset-0 z-[9998] bg-black/20"
           />
-          <motion.div
-            role="dialog"
-            aria-modal="true"
-            initial={{ opacity: 0, scale: 0.96, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 10 }}
-            transition={{ duration: 0.22, ease }}
-            className={`fixed top-1/2 left-1/2 z-[9999] max-h-[min(92vh,720px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-[14px] bg-white shadow-[0_24px_60px_rgba(0,0,0,0.18)] ${widthClass} ${className}`}
+          <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none"
+            aria-hidden={false}
           >
-            {children}
-          </motion.div>
+            <motion.div
+              key="profile-modal-dialog"
+              role="dialog"
+              aria-modal="true"
+              initial={modalInitial}
+              animate={modalEnter}
+              exit={modalExit}
+              transition={createFormModalTransition}
+              style={{ transformOrigin: 'center center' }}
+              className={`pointer-events-auto max-h-[min(92vh,720px)] overflow-y-auto rounded-[14px] bg-white shadow-[0_24px_60px_rgba(0,0,0,0.18)] ${widthClass} ${className}`}
+            >
+              {children}
+            </motion.div>
+          </div>
         </>
       ) : null}
     </AnimatePresence>,
-    document.body
+    document.body,
   );
 }

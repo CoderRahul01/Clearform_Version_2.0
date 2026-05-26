@@ -1,7 +1,8 @@
 import { RiAddLine, RiDeleteBin6Line } from 'react-icons/ri';
 import LogicFieldPicker from '@/features/forms/components/LogicFieldPicker';
+import LogicValueInput from '@/features/forms/components/LogicValueInput';
 import { getLogicFieldsForScreenLabel } from '@/features/forms/constants/logicFieldCatalog';
-import { getOperatorsForFieldId, isNumericFieldId } from '@/features/forms/utils/logicEngine';
+import { getOperatorsForFieldId } from '@/features/forms/utils/logicEngine';
 
 const createEmptyVisibilityCondition = (priorScreens) => {
   const first = priorScreens[0];
@@ -31,24 +32,6 @@ const LogicSelect = ({ value, onChange, options, className = '' }) => (
   </select>
 );
 
-const LogicValueInput = ({ fieldId, operator, value, onChange, className = '' }) => {
-  const hideValue = operator === 'is_empty' || operator === 'is_not_empty';
-  if (hideValue) {
-    return <span className={`text-[10px] text-[#aaa] px-1 ${className}`}>—</span>;
-  }
-  const numeric = isNumericFieldId(fieldId);
-  return (
-    <input
-      type={numeric ? 'number' : 'text'}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={numeric ? '0' : '…'}
-      className={`bg-white border border-[rgba(0,0,0,0.12)] rounded-[6px] px-2 py-[6px] text-[11px] text-[#111] outline-none min-w-0 flex-1 ${className}`}
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
-    />
-  );
-};
-
 /**
  * "SHOW THIS BLOCK IF" editor — conditions reference answers from prior screens only.
  */
@@ -56,6 +39,7 @@ export default function BlockVisibilityConditions({
   conditions = [],
   onChange,
   priorScreens = [],
+  screens = [],
   compact = true,
 }) {
   const canAdd = priorScreens.length > 0;
@@ -153,10 +137,14 @@ export default function BlockVisibilityConditions({
                     className="flex-[1_1_80px] min-w-[80px]"
                   />
                   <LogicValueInput
+                    screens={screens}
+                    sourceScreenId={cond.sourceScreenId}
                     fieldId={cond.fieldId}
                     operator={cond.operator}
                     value={cond.value}
                     onChange={(v) => updateCondition(cond.id, { value: v })}
+                    selectClassName="bg-white border border-[rgba(0,0,0,0.12)] rounded-[6px] px-2 py-[6px] text-[11px] text-[#111] outline-none cursor-pointer min-w-0 flex-1"
+                    inputClassName="bg-white border border-[rgba(0,0,0,0.12)] rounded-[6px] px-2 py-[6px] text-[11px] text-[#111] outline-none min-w-0 flex-1"
                   />
                   <button
                     type="button"

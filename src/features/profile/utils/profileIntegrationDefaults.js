@@ -1,23 +1,27 @@
 export const DEFAULT_INTEGRATIONS = {
-  webhook: { connected: true },
-  googleSheets: { connected: false },
+  webhook: { connected: false },
+  googleSheets: { connected: true },
+  googleDrive: { connected: false },
+  slack: { connected: true },
+  notion: { connected: false },
 };
 
+const INTEGRATION_KEYS = ['webhook', 'googleSheets', 'googleDrive', 'slack', 'notion'];
+
 export function cloneIntegrations(integrations) {
-  return {
-    webhook: { ...integrations.webhook },
-    googleSheets: { ...integrations.googleSheets },
-  };
+  return INTEGRATION_KEYS.reduce((acc, key) => {
+    acc[key] = { ...integrations[key] };
+    return acc;
+  }, {});
 }
 
 export function mergeIntegrations(saved) {
   const base = cloneIntegrations(DEFAULT_INTEGRATIONS);
   if (!saved || typeof saved !== 'object') return base;
-  if (typeof saved.webhook?.connected === 'boolean') {
-    base.webhook.connected = saved.webhook.connected;
-  }
-  if (typeof saved.googleSheets?.connected === 'boolean') {
-    base.googleSheets.connected = saved.googleSheets.connected;
-  }
+  INTEGRATION_KEYS.forEach((key) => {
+    if (typeof saved[key]?.connected === 'boolean') {
+      base[key].connected = saved[key].connected;
+    }
+  });
   return base;
 }

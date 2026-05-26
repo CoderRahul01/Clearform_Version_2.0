@@ -1,3 +1,5 @@
+import { normalizeResponseQualityOptions } from '@/features/forms/components/ResponseQualityScoringCard';
+
 /**
 
  * Per-screen field config: extract from / apply to FormBuilder global state.
@@ -152,6 +154,26 @@ export function normalizeWorkFields(fields) {
 
 
 
+/**
+ * Builder preview: prefer live panel state for the active screen so sidebar,
+ * logic canvas, and configure panel stay in sync while typing.
+ */
+export function getBuilderScreenPreviewText(screen, fallbackMap = {}, activeScreenId = null) {
+  if (!screen) return '';
+  if (screen.previewText) return screen.previewText;
+  if (screen.type === 'intro') return screen.name || 'Start Screen';
+  if (screen.type === 'end') return screen.name || 'End Screen';
+  if (screen.type !== 'content') return '';
+
+  const live =
+    activeScreenId != null && screen.id === activeScreenId
+      ? fallbackMap[screen.label]
+      : null;
+  if (live) return live;
+
+  return getScreenPreviewText(screen, fallbackMap);
+}
+
 export function getScreenPreviewText(screen, fallbackMap = {}) {
 
   if (!screen) return '';
@@ -189,8 +211,6 @@ export function getScreenPreviewText(screen, fallbackMap = {}) {
     Images: c.imageQuestion,
 
     Video: c.videoQuestion,
-
-    Maps: c.mapQuestion,
 
     'Multi-image upload': c.question,
 
@@ -327,6 +347,10 @@ export function extractScreenConfig(screen, globals) {
         longTextRequired: globals.longTextRequired,
 
         longTextHidden: globals.longTextHidden,
+
+        longTextResponseQualityEnabled: globals.longTextResponseQualityEnabled,
+
+        longTextResponseQualityOptions: globals.longTextResponseQualityOptions,
 
       };
 
@@ -596,42 +620,6 @@ export function extractScreenConfig(screen, globals) {
 
       };
 
-    case 'Maps':
-
-      return {
-
-        mapQuestion: globals.mapQuestion,
-
-        mapHelperText: globals.mapHelperText,
-
-        mapType: globals.mapType,
-
-        mapZoom: globals.mapZoom,
-
-        mapDefaultLat: globals.mapDefaultLat,
-
-        mapDefaultLng: globals.mapDefaultLng,
-
-        mapDefaultAddress: globals.mapDefaultAddress,
-
-        mapAllowPinMovement: globals.mapAllowPinMovement,
-
-        mapShowSearchBar: globals.mapShowSearchBar,
-
-        mapRestrictRadius: globals.mapRestrictRadius,
-
-        mapRestrictRadiusKm: globals.mapRestrictRadiusKm,
-
-        mapPinLabel: globals.mapPinLabel,
-
-        mapHeight: globals.mapHeight,
-
-        mapRequired: globals.mapRequired,
-
-        mapHidden: globals.mapHidden,
-
-      };
-
     case 'Media':
 
       return {
@@ -786,7 +774,9 @@ export function applyScreenConfig(screen, config, setters) {
       }
 
       if (config.shortTextResponseQualityOptions != null) {
-        setters.setShortTextResponseQualityOptions(config.shortTextResponseQualityOptions);
+        setters.setShortTextResponseQualityOptions(
+          normalizeResponseQualityOptions(config.shortTextResponseQualityOptions),
+        );
       }
 
       break;
@@ -812,6 +802,16 @@ export function applyScreenConfig(screen, config, setters) {
       if (config.longTextRequired != null) setters.setLongTextRequired(config.longTextRequired);
 
       if (config.longTextHidden != null) setters.setLongTextHidden(config.longTextHidden);
+
+      if (config.longTextResponseQualityEnabled != null) {
+        setters.setLongTextResponseQualityEnabled(config.longTextResponseQualityEnabled);
+      }
+
+      if (config.longTextResponseQualityOptions != null) {
+        setters.setLongTextResponseQualityOptions(
+          normalizeResponseQualityOptions(config.longTextResponseQualityOptions),
+        );
+      }
 
       break;
 
@@ -1058,40 +1058,6 @@ export function applyScreenConfig(screen, config, setters) {
       if (config.videoAspectRatio != null) setters.setVideoAspectRatio(config.videoAspectRatio);
 
       if (config.videoCornerRadius != null) setters.setVideoCornerRadius(config.videoCornerRadius);
-
-      break;
-
-    case 'Maps':
-
-      if (config.mapQuestion != null) setters.setMapQuestion(config.mapQuestion);
-
-      if (config.mapHelperText != null) setters.setMapHelperText(config.mapHelperText);
-
-      if (config.mapType != null) setters.setMapType(config.mapType);
-
-      if (config.mapZoom != null) setters.setMapZoom(config.mapZoom);
-
-      if (config.mapDefaultLat != null) setters.setMapDefaultLat(config.mapDefaultLat);
-
-      if (config.mapDefaultLng != null) setters.setMapDefaultLng(config.mapDefaultLng);
-
-      if (config.mapDefaultAddress != null) setters.setMapDefaultAddress(config.mapDefaultAddress);
-
-      if (config.mapAllowPinMovement != null) setters.setMapAllowPinMovement(config.mapAllowPinMovement);
-
-      if (config.mapShowSearchBar != null) setters.setMapShowSearchBar(config.mapShowSearchBar);
-
-      if (config.mapRestrictRadius != null) setters.setMapRestrictRadius(config.mapRestrictRadius);
-
-      if (config.mapRestrictRadiusKm != null) setters.setMapRestrictRadiusKm(config.mapRestrictRadiusKm);
-
-      if (config.mapPinLabel != null) setters.setMapPinLabel(config.mapPinLabel);
-
-      if (config.mapHeight != null) setters.setMapHeight(config.mapHeight);
-
-      if (config.mapRequired != null) setters.setMapRequired(config.mapRequired);
-
-      if (config.mapHidden != null) setters.setMapHidden(config.mapHidden);
 
       break;
 

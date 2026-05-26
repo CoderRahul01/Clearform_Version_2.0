@@ -1,19 +1,11 @@
 import { useState } from 'react';
 import clearformLogo from '@/assets/clearform-high-resolution-logo-transparent (1).png';
 import CheckoutStepper from '@/features/profile/components/billing/CheckoutStepper';
-import CheckoutOrderSummary from '@/features/profile/components/billing/CheckoutOrderSummary';
-import {
-  CardPaymentForm,
-  NetbankingPaymentForm,
-  PaymentMethodTabs,
-  UpiPaymentForm,
-} from '@/features/profile/components/billing/BillingPaymentForms';
+import RazorpayCheckoutPlaceholder from '@/features/profile/components/billing/RazorpayCheckoutPlaceholder';
+import { PaymentMethodTabs } from '@/features/profile/components/billing/BillingPaymentForms';
 
 const BillingPaymentStep = ({ selection, onBack, onPay }) => {
   const [paymentMethod, setPaymentMethod] = useState('card');
-
-  const summaryVariant =
-    paymentMethod === 'card' ? 'card' : paymentMethod === 'netbanking' ? 'netbanking' : 'upi';
 
   return (
     <div className="flex max-h-[min(92vh,671px)] flex-col">
@@ -46,27 +38,19 @@ const BillingPaymentStep = ({ selection, onBack, onPay }) => {
 
             <PaymentMethodTabs method={paymentMethod} onChange={setPaymentMethod} />
 
-            {paymentMethod === 'card' ? (
-              <CardPaymentForm selection={selection} onPay={onPay} />
-            ) : null}
-            {paymentMethod === 'upi' ? (
-              <UpiPaymentForm selection={selection} onPay={onPay} />
-            ) : null}
-            {paymentMethod === 'netbanking' ? (
-              <NetbankingPaymentForm selection={selection} onPay={onPay} />
-            ) : null}
-            {paymentMethod === 'more' ? (
-              <p className="py-8 text-center text-[13px] text-[#888580]">
-                Additional payment methods are not available in this demo.
-              </p>
-            ) : null}
+            <RazorpayCheckoutPlaceholder
+              selection={selection}
+              paymentMethod={paymentMethod}
+              variant="payment"
+              onContinue={(ctx) => onPay?.({ ...ctx, paymentMethod })}
+            />
           </div>
         </div>
 
-        <CheckoutOrderSummary
+        <RazorpayCheckoutPlaceholder
           selection={selection}
-          variant={summaryVariant}
-          promoInput={paymentMethod !== 'card'}
+          paymentMethod={paymentMethod}
+          variant="summary"
         />
       </div>
     </div>

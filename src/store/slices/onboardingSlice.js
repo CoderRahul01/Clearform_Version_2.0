@@ -13,7 +13,7 @@ const initialState = {
   completed: readOnboardingComplete(),
   /** Only true during signup onboarding — not restored on sign-in / app load */
   active: false,
-  step: session.step || 1,
+  step: session.step ?? 0,
   selectedTemplateId: session.selectedTemplateId,
 };
 
@@ -33,7 +33,7 @@ const onboardingSlice = createSlice({
     startOnboarding(state) {
       state.completed = false;
       state.active = true;
-      state.step = 1;
+      state.step = 0;
       state.selectedTemplateId = null;
       writeOnboardingComplete(false);
       persist(state);
@@ -58,7 +58,7 @@ const onboardingSlice = createSlice({
       if (state.completed) return;
       state.active = true;
       const stored = readOnboardingSession();
-      state.step = stored.step || state.step || 1;
+      state.step = stored.step ?? state.step ?? 0;
       state.selectedTemplateId = stored.selectedTemplateId ?? state.selectedTemplateId;
       persist(state);
     },
@@ -73,7 +73,7 @@ const onboardingSlice = createSlice({
         return;
       }
       const stored = readOnboardingSession();
-      state.step = stored.step || 1;
+      state.step = stored.step ?? 0;
       state.selectedTemplateId = stored.selectedTemplateId;
     },
   },

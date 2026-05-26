@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useSelector } from 'react-redux';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   RiSearchLine,
@@ -10,88 +11,22 @@ import {
   RiListCheck2,
   RiChat3Line,
 } from 'react-icons/ri';
+import { selectFormResponses } from '@/store/slices/formsSlice';
+import { readBuilderDraft } from '@/features/forms/utils/builderDraftStorage';
+import {
+  buildResponseTableHeaders,
+  responseToTableRow,
+  filterResponsesByRange,
+} from '@/features/forms/utils/formResponseBuilder';
 import CustomRangeDatePicker, { formatCustomRangeLabel } from './CustomRangeDatePicker';
 import AnalyticsResponseDetailDrawer from './AnalyticsResponseDetailDrawer';
-import { deriveQuestionCount } from './dropoffRiverData';
-
-/** Demo total for footer copy (subset of rows shown in UI). */
-const MOCK_RESPONSES_TOTAL = 248;
-
-const MOCK_ROWS = [
-  ['swapnil.vyas921@gmail.com', '20 Dec 2025 20:14', 'Completed', 'Manager', '1-5', 'Calls · WhatsApp', 'Too slow to compile'],
-  ['Jordan Lee', '20 Dec 2025 18:02', 'Completed', 'Founder', '6-15', 'In-person · Dedicated tool', '—'],
-  ['vasundhara.tadimalla@gmail.com', '19 Dec 2025 09:41', 'Completed', 'Team Lead', '16-30', 'Google Forms', 'Spreadsheets everywhere'],
-  ['+1 (415) 555-0192', '18 Dec 2025 22:15', 'Completed', 'Other', '1-5', 'Calls', '—'],
-  ['Alex Martinez', '17 Dec 2025 14:30', 'Completed', 'Manager', '6-15', 'WhatsApp · Email', 'No single source of truth'],
-  ['feedback@acme.co', '16 Dec 2025 11:08', 'Completed', 'Team Lead', '16-30', 'Dedicated tool', '—'],
-  ['+44 7700 900123', '15 Dec 2025 19:55', 'Completed', 'Other', '1-5', 'In-person', 'Hard to follow up'],
-  ['research@northwind.io', '14 Dec 2025 08:12', 'Completed', 'Manager', '6-15', 'Calls · WhatsApp · Email', '—'],
-  ['pm.lead@studio.dev', '13 Dec 2025 16:44', 'Completed', 'Founder', '1-5', 'Google Forms', '—'],
-  ['Samira Khan', '12 Dec 2025 12:01', 'Completed', 'Team Lead', '16-30', 'Dedicated tool · Calls', 'Lost in Slack threads'],
-  ['hello@smallco.net', '11 Dec 2025 17:22', 'Completed', 'Manager', '1-5', 'Email', '—'],
-  ['+61 400 000 000', '10 Dec 2025 09:05', 'Completed', 'Founder', '6-15', 'Calls', '—'],
-  ['cx@retailbrand.com', '9 Dec 2025 21:40', 'Completed', 'Team Lead', '16-30', 'WhatsApp · Dedicated tool', 'Manual exports'],
-  ['Chris P.', '8 Dec 2025 13:18', 'Completed', 'Other', '1-5', 'Google Forms · Email', '—'],
-  ['designer@folio.app', '7 Dec 2025 10:33', 'Completed', 'Manager', '6-15', 'In-person · Calls', '—'],
-  ['—', '6 Dec 2025 15:51', 'Completed', 'Team Lead', '16-30', 'Dedicated tool', 'Version chaos'],
-  ['beta.user@mail.test', '5 Dec 2025 07:44', 'Completed', 'Founder', '1-5', 'Calls · WhatsApp', '—'],
-  ['Priya N.', '4 Dec 2025 19:09', 'Completed', 'Manager', '6-15', 'Google Forms', '—'],
-];
 
 /** Fixed columns that appear before the form's question columns. */
 const FIXED_HEADERS = [
-  { label: 'Name, email, or phone', Icon: null },
+  { label: 'Name, email, or phone', Icon: null, iconBg: null },
   { label: 'Response time', Icon: RiTimeLine, iconBg: '#E8F4FC' },
   { label: 'Response type', Icon: RiChat3Line, iconBg: '#FFF0E6' },
 ];
-
-/** Demo question pool — cycled through to fill the per-form question columns. */
-const QUESTION_POOL = [
-  { label: 'What best describes your role?', iconBg: '#ECFDF3' },
-  { label: 'What is your team size?', iconBg: '#F5F3FF' },
-  { label: 'How do you collect feedback?', iconBg: '#FFFAEB' },
-  { label: 'Biggest frustration with your current tool', iconBg: '#F0FDFA' },
-  { label: 'How often does your team run surveys?', iconBg: '#FEF3F2' },
-  { label: 'Which channels do you collect from?', iconBg: '#EFF6FF' },
-  { label: 'How urgent is solving this?', iconBg: '#FDF4FF' },
-  { label: 'What would change with the right tool?', iconBg: '#F0FDF4' },
-  { label: 'Would you recommend this to a peer?', iconBg: '#FFFBEB' },
-  { label: 'Anything we missed?', iconBg: '#F5F5F4' },
-];
-
-const QUESTION_SAMPLES = [
-  ['Manager', 'Founder', 'Team Lead', 'Other'],
-  ['1-5', '6-15', '16-30', '31-50', '50+'],
-  ['Calls', 'WhatsApp', 'Email', 'Google Forms', 'In-person', 'Dedicated tool'],
-  ['Too slow', 'No analytics', 'Hard to share', 'Manual exports', '—'],
-  ['Weekly', 'Monthly', 'Quarterly', 'Rarely'],
-  ['Web', 'Mobile', 'Email', 'In-app'],
-  ['High', 'Medium', 'Low'],
-  ['Faster decisions', 'Better insights', 'Less manual work'],
-  ['Likely', 'Maybe', 'Not yet'],
-  ['Nothing', 'Pricing', '—'],
-];
-
-function buildHeadersForForm(form) {
-  const qCount = Math.min(deriveQuestionCount(form), QUESTION_POOL.length);
-  const questionHeaders = Array.from({ length: qCount }, (_, i) => ({
-    label: QUESTION_POOL[i % QUESTION_POOL.length].label,
-    Icon: RiListCheck2,
-    iconBg: QUESTION_POOL[i % QUESTION_POOL.length].iconBg,
-  }));
-  return [...FIXED_HEADERS, ...questionHeaders];
-}
-
-function buildRowsForHeaders(headers) {
-  const baseRows = MOCK_ROWS;
-  return baseRows.map((row, ri) =>
-    headers.map((_, ci) => {
-      if (ci < FIXED_HEADERS.length) return row[ci];
-      const pool = QUESTION_SAMPLES[(ci - FIXED_HEADERS.length) % QUESTION_SAMPLES.length];
-      return pool[(ri + ci) % pool.length];
-    }),
-  );
-}
 
 const RANGE_OPTIONS = [
   'All time',
@@ -139,14 +74,44 @@ function renderCellContent(cell, ci) {
 }
 
 function AnalyticsResponsesPanel({ form, rangeLabel, onRangeChange }) {
-  const HEADERS = useMemo(() => buildHeadersForForm(form), [form?.id]);
-  const FORM_ROWS = useMemo(() => buildRowsForHeaders(HEADERS), [HEADERS]);
+  const storedResponses = useSelector((state) => selectFormResponses(state, form?.id));
 
   const [search, setSearch] = useState('');
   const [localRangeOpen, setLocalRangeOpen] = useState(false);
   const [customPickerOpen, setCustomPickerOpen] = useState(false);
   const [localRange, setLocalRange] = useState(rangeLabel ?? 'All time');
   const [lastCustomRange, setLastCustomRange] = useState({ start: null, end: null });
+
+  const draft = useMemo(
+    () => (form?.id != null ? readBuilderDraft(form.id) : null),
+    [form?.id],
+  );
+
+  const HEADERS = useMemo(() => {
+    const built = buildResponseTableHeaders(draft, RiListCheck2);
+    return built.length > FIXED_HEADERS.length
+      ? built
+      : [
+          ...FIXED_HEADERS,
+          {
+            label: 'Add questions in the form builder to see answer columns',
+            Icon: RiListCheck2,
+            iconBg: '#F5F3FF',
+          },
+        ];
+  }, [draft]);
+
+  const responsesInRange = useMemo(
+    () => filterResponsesByRange(storedResponses, localRange, lastCustomRange),
+    [storedResponses, localRange, lastCustomRange],
+  );
+
+  const FORM_ROWS = useMemo(
+    () => responsesInRange.map((response) => responseToTableRow(response)),
+    [responsesInRange],
+  );
+
+  const totalResponses = storedResponses.length;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [columnOrder, setColumnOrder] = useState(() => HEADERS.map((_, i) => i));
@@ -554,7 +519,11 @@ function AnalyticsResponsesPanel({ form, rangeLabel, onRangeChange }) {
                     colSpan={HEADERS.length}
                     className={`border-b ${TABLE_BORDER} px-[14px] py-10 text-center text-[13px] text-[#6b6860] bg-white rounded-b-[12px]`}
                   >
-                    No responses match your search. Try a different keyword.
+                    {totalResponses === 0
+                      ? 'No responses yet. Complete a preview submission in the form builder or share your live form to collect answers.'
+                      : search.trim()
+                        ? 'No responses match your search. Try a different keyword.'
+                        : 'No responses in this date range. Try a different range.'}
                   </td>
                 </tr>
               ) : (
@@ -652,9 +621,11 @@ function AnalyticsResponsesPanel({ form, rangeLabel, onRangeChange }) {
         <div
           className={`rounded-b-[14px] border-t ${TABLE_BORDER} px-4 py-3 text-[13px] text-[#6b6966] bg-[#fafaf9]`}
         >
-          {filtered.length === 0
-            ? `0 of ${MOCK_RESPONSES_TOTAL} responses`
-            : `${filtered.length} of ${MOCK_RESPONSES_TOTAL} responses`}
+          {totalResponses === 0
+            ? '0 responses'
+            : filtered.length === totalResponses
+              ? `${filtered.length} response${filtered.length === 1 ? '' : 's'}`
+              : `${filtered.length} of ${totalResponses} responses`}
         </div>
       </div>
 

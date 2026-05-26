@@ -1,17 +1,21 @@
 import { getPlanDisplayPrice, PAID_PLANS } from '@/features/profile/utils/profilePlanCatalog';
 import { formatInr } from '@/features/profile/utils/profileBillingCheckout';
 
-export const FREE_PLAN = {
-  id: 'free',
-  name: 'Free',
+/** Default workspace tier during the pilot — no paid subscription yet. */
+export const PILOT_PLAN = {
+  id: 'pilot',
+  name: 'Pilot',
   priceLabel: '₹0',
-  priceSubtext: 'forever free',
+  priceSubtext: 'Pilot access',
   limitsLabel: '3 forms · 100 responses / month',
   formsLimit: 3,
   responsesLimit: 100,
   teamLimit: 1,
-  headerSubtext: "You're on the free plan",
+  headerSubtext: "You're on the pilot program",
 };
+
+/** @deprecated Use PILOT_PLAN */
+export const FREE_PLAN = PILOT_PLAN;
 
 const PLAN_STRIP = {
   starter: {

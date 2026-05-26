@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDispatch } from 'react-redux';
 import {
   RiCheckLine,
   RiComputerLine,
@@ -22,6 +23,11 @@ import {
   strengthBarColor,
   strengthTextColor,
 } from '@/features/profile/utils/profileSecurityUtils';
+import { addNotification } from '@/store/slices/notificationsSlice';
+import {
+  NOTIFICATION_ROUTE_KEYS,
+  notificationAction,
+} from '@/constants/notificationRoutes';
 import {
   hasStoredPassword,
   verifyCurrentPassword,
@@ -157,6 +163,7 @@ const SessionRow = ({ session, onRevoke }) => {
 };
 
 const ProfileSecurityPanel = ({ email, profileEmail = '' }) => {
+  const dispatch = useDispatch();
   const lookupEmails = useMemo(
     () => [profileEmail].filter((e) => e?.trim() && e.trim().toLowerCase() !== email?.trim().toLowerCase()),
     [email, profileEmail]
@@ -269,10 +276,39 @@ const ProfileSecurityPanel = ({ email, profileEmail = '' }) => {
     });
   };
 
+  const pushSessionRevokedNotification = (allOthers) => {
+    dispatch(
+      addNotification({
+        type: 'session_revoked',
+        category: 'alerts',
+        iconType: 'warning',
+        iconBg: '#fef3e2',
+        title: allOthers ? 'Other sessions revoked' : 'Session revoked',
+        titleColor: '#b45309',
+        bodySegments: allOthers
+          ? [
+              { text: 'All other devices', bold: true },
+              { text: ' were signed out of your Clearform account.', bold: false },
+            ]
+          : [
+              { text: 'A device session', bold: true },
+              { text: ' was signed out of your Clearform account.', bold: false },
+            ],
+        timestamp: 'Just now',
+        action: notificationAction({
+          label: 'Security settings',
+          style: 'primary',
+          routeKey: NOTIFICATION_ROUTE_KEYS.security,
+        }),
+      }),
+    );
+  };
+
   const handleRevokeSession = (sessionId) => {
     const next = sessions.filter((s) => s.id !== sessionId);
     persistSessions(next);
     setRevokeTarget(null);
+    pushSessionRevokedNotification(false);
     showToast({ type: 'success', message: 'Session revoked.', duration: 2200 });
   };
 
@@ -280,6 +316,7 @@ const ProfileSecurityPanel = ({ email, profileEmail = '' }) => {
     const next = sessions.filter((s) => s.isCurrent);
     persistSessions(next);
     setRevokeAllOpen(false);
+    pushSessionRevokedNotification(true);
     showToast({ type: 'success', message: 'All other sessions revoked.', duration: 2200 });
   };
 

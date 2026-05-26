@@ -1,89 +1,72 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { RiRobot2Line, RiInformationLine, RiArrowDownSLine, RiCheckLine } from 'react-icons/ri';
+import { RiRobot2Line, RiInformationLine, RiArrowDownSLine } from 'react-icons/ri';
 
 const MAX_CRITERIA = 2;
 const FONT = { fontFamily: "'DM Sans', sans-serif" };
 
 export const DEFAULT_RESPONSE_QUALITY_OPTIONS = {
-  length: { enabled: false, expanded: true, minWords: 10 },
+  length: { enabled: false, expanded: false, minWords: 10 },
   specificity: {
     enabled: false,
-    expanded: true,
+    expanded: false,
     sensitivity: 'Medium',
     vagueWords: 'good, nice, okay, fine, great, bad',
   },
-  relevance: { enabled: false, expanded: true, keywords: '', matchThreshold: 2 },
-  completeness: { enabled: false, expanded: true, detectTrailing: true, requiredSentences: 1 },
+  relevance: { enabled: false, expanded: false, keywords: '', matchThreshold: 2 },
+  completeness: { enabled: false, expanded: false, detectTrailing: true, requiredSentences: 1 },
 };
+
+/** Merge saved options and force every criterion row collapsed in the UI. */
+export function normalizeResponseQualityOptions(options) {
+  const next = {};
+  for (const id of Object.keys(DEFAULT_RESPONSE_QUALITY_OPTIONS)) {
+    next[id] = {
+      ...DEFAULT_RESPONSE_QUALITY_OPTIONS[id],
+      ...(options?.[id] || {}),
+      expanded: false,
+    };
+  }
+  return next;
+}
 
 const CRITERIA_META = [
   {
     id: 'length',
     title: 'Length',
-    description: 'Flags answers that are too short',
-    bullets: [
-      {
-        prefix: 'For respondents:',
-        text: 'Encourages them to elaborate. Short answers often miss the real insight.',
-      },
-      {
-        prefix: 'For your data:',
-        text: 'Submissions below your word count get flagged Red — you skip the noise instantly.',
-      },
-    ],
+    description: 'Too-short answers',
+    hint: 'Nudges more detail while typing; flags short replies red.',
   },
   {
     id: 'specificity',
     title: 'Specificity',
-    description: 'Detects vague or generic language',
-    bullets: [
-      {
-        prefix: 'For respondents:',
-        text: 'Surfaces when someone writes "good" or "fine" with nothing behind it — pushing for real reasons.',
-      },
-      {
-        prefix: 'For your data:',
-        text: 'Vague submissions are Amber-flagged so you review meaningful feedback first.',
-      },
-    ],
+    description: 'Vague or generic wording',
+    hint: 'Calls out empty words like “good”; flags vague replies amber.',
   },
   {
     id: 'relevance',
     title: 'Relevance',
-    description: 'Identifies off-topic answers',
-    bullets: [
-      {
-        prefix: 'For respondents:',
-        text: 'Catches answers that drift away from your question topic entirely.',
-      },
-      {
-        prefix: 'For your data:',
-        text: 'Off-topic responses get flagged Red so you only act on answers that match your topic.',
-      },
-    ],
+    description: 'Off-topic answers',
+    hint: 'Keeps answers on your question; flags drift red.',
   },
   {
     id: 'completeness',
     title: 'Completeness',
-    description: 'Catches partial or trailing answers',
-    bullets: [
-      {
-        prefix: 'For respondents:',
-        text: 'Detects "I think that…" with no follow-through — answers that trail off mid-thought.',
-      },
-      {
-        prefix: 'For your data:',
-        text: 'Incomplete submissions are Amber-flagged so you can follow up before acting on them.',
-      },
-    ],
+    description: 'Partial or trailing answers',
+    hint: 'Catches answers that stop mid-thought; flags incomplete amber.',
   },
 ];
 
+const BADGE_DOT = {
+  green: '#22c55e',
+  yellow: '#eab308',
+  red: '#ef4444',
+};
+
 const BADGE_LOGIC = [
-  { color: '#3d9b4f', label: 'All active criteria pass →', badge: 'Green' },
-  { color: '#d4850a', label: '1 active criterion fails →', badge: 'Amber' },
-  { color: '#c94040', label: '2+ active criteria fail →', badge: 'Red' },
+  { color: BADGE_DOT.green, label: 'All pass', badge: 'Green' },
+  { color: BADGE_DOT.yellow, label: 'One fails', badge: 'Yellow' },
+  { color: BADGE_DOT.red, label: 'Two+ fail', badge: 'Red' },
 ];
 
 function MainToggle({ checked, onChange }) {
@@ -124,19 +107,11 @@ function CriterionToggle({ checked, onChange, disabled }) {
   );
 }
 
-function InfoBullets({ bullets }) {
+function CriterionHint({ children }) {
   return (
-    <div className="bg-[#f7f5f0] rounded-[6px] px-3 py-[10px] flex flex-col gap-[6px]">
-      {bullets.map(({ prefix, text }) => (
-        <div key={prefix} className="flex gap-[7px] items-start">
-          <RiCheckLine size={13} className="text-[#3d9b4f] shrink-0 mt-0.5" />
-          <p className="text-[11.5px] leading-[17.25px]" style={FONT}>
-            <span className="font-semibold text-[#1a1a18]">{prefix} </span>
-            <span className="text-[#8a8880]">{text}</span>
-          </p>
-        </div>
-      ))}
-    </div>
+    <p className="bg-[#f7f5f0] rounded-[6px] px-3 py-2 text-[11px] text-[#8a8880] leading-snug" style={FONT}>
+      {children}
+    </p>
   );
 }
 
@@ -232,7 +207,7 @@ function CriterionOptions({ id, options, onUpdate }) {
               style={FONT}
             />
             <span className="text-[11px] text-[#b4b2ac]" style={FONT}>
-              Comma-separated. Leave blank to use defaults.
+              Comma-separated. Blank = defaults.
             </span>
           </div>
         </>
@@ -251,7 +226,7 @@ function CriterionOptions({ id, options, onUpdate }) {
               style={FONT}
             />
             <span className="text-[11px] text-[#b4b2ac]" style={FONT}>
-              Comma-separated. Leave blank to skip keyword matching.
+              Comma-separated. Blank = skip matching.
             </span>
           </div>
           <div className="flex flex-col gap-[6px]">
@@ -272,7 +247,7 @@ function CriterionOptions({ id, options, onUpdate }) {
             <FieldLabel>Detect trailing sentences</FieldLabel>
             <SegmentedControl
               options={[
-                { value: true, label: 'Yes — flag unfinished' },
+                { value: true, label: 'Yes' },
                 { value: false, label: 'No' },
               ]}
               value={options.detectTrailing}
@@ -296,7 +271,7 @@ function CriterionOptions({ id, options, onUpdate }) {
 }
 
 function CriterionCard({ meta, options, atLimit, onToggleEnabled, onToggleExpanded, onUpdate }) {
-  const { id, title, description, bullets } = meta;
+  const { id, title, description, hint } = meta;
   const isOn = options.enabled;
   const isExpanded = options.expanded;
 
@@ -339,7 +314,7 @@ function CriterionCard({ meta, options, atLimit, onToggleEnabled, onToggleExpand
             className="overflow-hidden"
           >
             <div className="border-t border-[#e4e2dc] px-4 pt-[13px] pb-[26px] flex flex-col gap-3">
-              <InfoBullets bullets={bullets} />
+              <CriterionHint>{hint}</CriterionHint>
               <CriterionOptions id={id} options={options} onUpdate={onUpdate} />
             </div>
           </motion.div>
@@ -356,7 +331,19 @@ export default function ResponseQualityScoringCard({
   onOptionsChange,
   onSave,
 }) {
+  const [justSaved, setJustSaved] = useState(false);
   const activeCount = Object.values(options).filter((o) => o.enabled).length;
+
+  const handleSaveClick = useCallback(() => {
+    onSave?.();
+    setJustSaved(true);
+  }, [onSave]);
+
+  useEffect(() => {
+    if (!justSaved) return undefined;
+    const timer = window.setTimeout(() => setJustSaved(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [justSaved]);
 
   const updateCriterion = useCallback(
     (id, patch) => {
@@ -374,14 +361,42 @@ export default function ResponseQualityScoringCard({
         const turningOn = !prev[id].enabled;
         const count = Object.values(prev).filter((o) => o.enabled).length;
         if (turningOn && count >= MAX_CRITERIA) return prev;
-        return { ...prev, [id]: { ...prev[id], enabled: turningOn } };
+        return { ...prev, [id]: { ...prev[id], enabled: turningOn, expanded: false } };
       });
     },
     [onOptionsChange]
   );
 
+  const prevEnabledRef = useRef(enabled);
+
+  useEffect(() => {
+    if (!prevEnabledRef.current && enabled) {
+      onOptionsChange((prev) => normalizeResponseQualityOptions(prev));
+    }
+    prevEnabledRef.current = enabled;
+  }, [enabled, onOptionsChange]);
+
+  useEffect(() => {
+    const anyExpanded = Object.values(options).some((o) => o.expanded);
+    if (anyExpanded) {
+      onOptionsChange((prev) => normalizeResponseQualityOptions(prev));
+    }
+    // Collapse stale expanded state from older drafts on first mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleEnabledChange = useCallback(
+    (next) => {
+      onEnabledChange(next);
+      if (next) {
+        onOptionsChange((prev) => normalizeResponseQualityOptions(prev));
+      }
+    },
+    [onEnabledChange, onOptionsChange],
+  );
+
   return (
-    <div className="w-full bg-[#f2f0eb] overflow-hidden">
+    <div className="w-full bg-[#f2f0eb] overflow-hidden rounded-[10px] border border-[#e4e2dc]">
       <div className={`bg-white flex items-center justify-between px-4 py-[12px] w-full ${enabled ? 'border-b border-[#e4e3de]' : ''}`}>
         <div className="flex items-center gap-2">
           <div className="w-[28px] h-[28px] bg-[#1a1a18] rounded-[7px] flex items-center justify-center shrink-0">
@@ -392,11 +407,11 @@ export default function ResponseQualityScoringCard({
               Response quality
             </span>
             <span className="text-[11px] text-[#717171] font-normal leading-tight" style={FONT}>
-              AI scores answers before you open them
+              Nudges better answers; flags weak ones before you review.
             </span>
           </div>
         </div>
-        <MainToggle checked={enabled} onChange={onEnabledChange} />
+        <MainToggle checked={enabled} onChange={handleEnabledChange} />
       </div>
 
       <AnimatePresence initial={false}>
@@ -412,10 +427,8 @@ export default function ResponseQualityScoringCard({
             <div className="w-full bg-[#f2f0eb] pt-[10px] pb-4 flex flex-col">
               <div className="w-full bg-[#edeae3] flex gap-[6px] items-start px-4 py-[7px] mb-3">
                 <RiInformationLine size={14} className="text-[#8a8880] shrink-0 mt-px" />
-                <p className="text-[11.5px] text-[#8a8880] leading-[17.25px]" style={FONT}>
-                  Select up to <span className="font-semibold">2 criteria</span> to focus your scoring.
-                  <br />
-                  More criteria = more selective filtering.
+                <p className="text-[11px] text-[#8a8880] leading-snug" style={FONT}>
+                  Pick up to <span className="font-semibold">2 criteria</span> — more means stricter filtering.
                 </p>
               </div>
 
@@ -437,13 +450,17 @@ export default function ResponseQualityScoringCard({
                 ))}
               </div>
 
-              <div className="w-full bg-white border-y border-[#e4e2dc] p-4 flex flex-col gap-[7px] mb-3">
+              <div className="mx-4 bg-white border border-[#e4e2dc] rounded-[8px] p-4 flex flex-col gap-[8px] mb-3">
                 <span className="text-[9.5px] font-semibold tracking-[0.95px] uppercase text-[#b4b2ac]" style={FONT}>
                   BADGE LOGIC PREVIEW
                 </span>
                 {BADGE_LOGIC.map(({ color, label, badge }) => (
-                  <div key={badge} className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-[4px] shrink-0" style={{ backgroundColor: color }} />
+                  <div key={badge} className="flex items-center gap-[10px]">
+                    <span
+                      className="w-[10px] h-[10px] rounded-full shrink-0 ring-1 ring-black/5"
+                      style={{ backgroundColor: color }}
+                      aria-hidden
+                    />
                     <span className="text-[12px] text-[#8a8880] leading-[16.8px] flex-1" style={FONT}>
                       {label}
                     </span>
@@ -454,14 +471,16 @@ export default function ResponseQualityScoringCard({
                 ))}
               </div>
 
-              <button
-                type="button"
-                onClick={onSave}
-                className="w-full bg-[#1a1a18] text-white text-[14px] font-semibold tracking-[-0.1px] py-3 cursor-pointer hover:bg-[#2c2c2c] transition-colors"
-                style={FONT}
-              >
-                Save
-              </button>
+              <div className="px-4">
+                <button
+                  type="button"
+                  onClick={handleSaveClick}
+                  className="w-full bg-[#1a1a18] text-white text-[14px] font-semibold tracking-[-0.1px] py-[11px] rounded-[10px] cursor-pointer hover:bg-[#2c2c2c] transition-colors shadow-[0_1px_3px_rgba(0,0,0,0.12)]"
+                  style={FONT}
+                >
+                  {justSaved ? 'Saved' : 'Save'}
+                </button>
+              </div>
             </div>
           </motion.div>
         )}

@@ -1,3 +1,5 @@
+import { readBuilderDraft } from '@/features/forms/utils/builderDraftStorage';
+
 /**
  * Drop-off river data. Matches Figma `riverContent` (1992:47643).
  * Each step is paired with the geometry of its exported vector (Vector*.svg)
@@ -132,9 +134,16 @@ export function hasRiverEnoughData(form) {
 }
 
 /**
- * Per-form deterministic question count (e.g. Responses panel demo).
+ * Question count from builder draft when available; otherwise form metadata or default.
  */
 export function deriveQuestionCount(form) {
+  if (form?.id != null) {
+    const draft = readBuilderDraft(form.id);
+    const content = draft?.screens?.filter((s) => s.type === 'content') ?? [];
+    if (content.length > 0) return content.length;
+  }
+  const raw = getRiverQuestionCountRaw(form);
+  if (raw != null) return Math.max(RIVER_Q_MIN, Math.min(RIVER_Q_MAX, raw));
   const seed = ((form?.id ?? 1) * 2654435761) >>> 0;
   const MIN = 6;
   const MAX = 22;

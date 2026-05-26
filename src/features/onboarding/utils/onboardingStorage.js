@@ -14,11 +14,11 @@ export const writeOnboardingComplete = (value) => {
 
 export const readOnboardingSession = () => {
   if (typeof window === 'undefined') {
-    return { active: false, step: 1, selectedTemplateId: null };
+    return { active: false, step: 0, selectedTemplateId: null };
   }
   return {
     active: localStorage.getItem(ACTIVE_KEY) === 'true',
-    step: Number(localStorage.getItem(STEP_KEY) || '1'),
+    step: Number(localStorage.getItem(STEP_KEY) ?? '0'),
     selectedTemplateId: localStorage.getItem(TEMPLATE_KEY) || null,
   };
 };
@@ -39,5 +39,5 @@ export const writeOnboardingSession = ({ active, step, selectedTemplateId }) => 
 
 export const clearOnboardingSession = () => {
   writeOnboardingComplete(true);
-  writeOnboardingSession({ active: false, step: 1, selectedTemplateId: null });
+  writeOnboardingSession({ active: false, step: 0, selectedTemplateId: null });
 };

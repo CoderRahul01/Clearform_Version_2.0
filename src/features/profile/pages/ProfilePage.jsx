@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   RiCheckLine,
   RiAlertLine,
@@ -8,7 +9,6 @@ import {
   RiArrowDownSLine,
 } from 'react-icons/ri';
 import Topbar from '@/components/layout/Topbar';
-import NotificationCenter from '@/features/forms/components/NotificationCenter';
 import ConfirmActionModal from '@/components/ui/ConfirmActionModal';
 import DiscardChangesModal from '@/features/profile/components/DiscardChangesModal';
 import ProfileFieldError from '@/features/profile/components/ProfileFieldError';
@@ -27,6 +27,8 @@ import {
   validatePhotoFile,
 } from '@/features/profile/utils/profileValidation';
 import { useToast } from '@/hooks/useToast';
+import { dispatchSyncSystemAlerts } from '@/utils/syncSystemAlertsToStore';
+import { store } from '@/store/store';
 import ProfileSecurityPanel from '@/features/profile/components/ProfileSecurityPanel';
 import ProfileNotificationsPanel from '@/features/profile/components/ProfileNotificationsPanel';
 import ProfileIntegrationsPanel from '@/features/profile/components/ProfileIntegrationsPanel';
@@ -34,7 +36,8 @@ import ProfileBillingPanel from '@/features/profile/components/ProfileBillingPan
 import ProfileTabLoadingSkeleton from '@/features/profile/components/profileSkeleton/ProfileTabLoadingSkeleton';
 import ExportReportModal from '@/features/profile/components/ExportReportModal';
 
-const PROFILE_TAB_LOAD_MS = 480;
+const pageEase = [0.25, 0.1, 0.25, 1];
+const PROFILE_TAB_LOAD_MS = 280;
 
 const PROFILE_TABS = [
   { id: 'profile', label: 'Profile' },
@@ -148,13 +151,19 @@ const ProfileTab = ({ active, label, onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    className={`pb-[11px] pt-[9px] text-[14px] font-medium transition-colors border-b-[1.6px] ${
-      active
-        ? 'border-[#1a1a18] text-[#1a1a18]'
-        : 'border-transparent text-[#9e9e9a] hover:text-[#6b6b68]'
+    className={`relative pb-[11px] pt-[9px] text-[14px] font-medium transition-colors duration-200 ${
+      active ? 'text-[#1a1a18]' : 'text-[#9e9e9a] hover:text-[#6b6b68]'
     }`}
   >
-    {label}
+    {active ? (
+      <motion.span
+        layoutId="profile-active-tab"
+        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+        className="absolute inset-x-0 bottom-0 h-[1.6px] bg-[#1a1a18]"
+        aria-hidden
+      />
+    ) : null}
+    <span className="relative z-10">{label}</span>
   </button>
 );
 
@@ -208,6 +217,7 @@ const ProfilePage = () => {
   const [photoUploadError, setPhotoUploadError] = useState(null);
 
   const fileInputRef = useRef(null);
+  const visitedTabsRef = useRef(new Set());
   const [profileBaseline, setProfileBaseline] = useState(null);
 
   const hydrateFromStore = useCallback(() => {
@@ -238,8 +248,15 @@ const ProfilePage = () => {
       setTabContentLoading(false);
       return;
     }
+    if (visitedTabsRef.current.has(activeTab)) {
+      setTabContentLoading(false);
+      return;
+    }
     setTabContentLoading(true);
-    const timer = window.setTimeout(() => setTabContentLoading(false), PROFILE_TAB_LOAD_MS);
+    const timer = window.setTimeout(() => {
+      visitedTabsRef.current.add(activeTab);
+      setTabContentLoading(false);
+    }, PROFILE_TAB_LOAD_MS);
     return () => clearTimeout(timer);
   }, [activeTab]);
 
@@ -378,6 +395,7 @@ const ProfilePage = () => {
     setFieldErrors({});
     setPhotoUploadError(null);
     setIsSaving(false);
+    dispatchSyncSystemAlerts(dispatch, store.getState());
     showToast({ type: 'success', message: 'Profile saved.', duration: 2200 });
   };
 
@@ -397,13 +415,11 @@ const ProfilePage = () => {
 
   return (
     <>
-      <NotificationCenter />
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f4f0]">
         <Topbar
           title={
             activeTab === 'profile' ? 'Profile' : `Profile > ${pageMeta.title}`
           }
-          titleSize="sm"
           useFormsLoading={false}
         />
 
@@ -422,7 +438,27 @@ const ProfilePage = () => {
         </nav>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-8 py-8">
-          <div className="mx-auto flex w-full max-w-[1150px] flex-col gap-8">
+          <div className="mx-auto w-full max-w-[1150px]">
+            <AnimatePresence mode="wait">
+              {tabContentLoading && IMPLEMENTED_TABS.has(activeTab) ? (
+                <motion.div
+                  key={`skel-${activeTab}`}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18, ease: pageEase }}
+                >
+                  <ProfileTabLoadingSkeleton tab={activeTab} />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key={`content-${activeTab}`}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.24, ease: pageEase }}
+                  className="flex flex-col gap-8"
+                >
             {activeTab !== 'profile' ? (
               <header>
                 <h1 className="text-[22px] font-semibold tracking-[-0.4px] text-[#1a1a18]">
@@ -432,10 +468,6 @@ const ProfilePage = () => {
               </header>
             ) : null}
 
-            {tabContentLoading && IMPLEMENTED_TABS.has(activeTab) ? (
-              <ProfileTabLoadingSkeleton tab={activeTab} />
-            ) : (
-              <>
             {activeTab === 'profile' && isIncomplete ? (
               <div
                 className="flex gap-3 rounded-[8px] border border-[#fde68a] bg-[#fffbeb] px-4 py-4"
@@ -746,8 +778,9 @@ const ProfilePage = () => {
             </section>
               </>
             ) : null}
-              </>
-            )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </div>

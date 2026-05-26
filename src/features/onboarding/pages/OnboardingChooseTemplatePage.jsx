@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
@@ -11,6 +11,7 @@ import {
 } from '@/features/templates/utils/templateFilters';
 import TemplateCard from '@/features/templates/components/TemplateCard';
 import {
+  selectOnboardingStep,
   selectOnboardingTemplate,
   setOnboardingStep,
 } from '@/store/slices/onboardingSlice';
@@ -19,12 +20,20 @@ import OnboardingTopbar from '../components/OnboardingTopbar';
 import OnboardingTemplatePreviewModal from '../components/OnboardingTemplatePreviewModal';
 import { buildFormFromTemplate as buildBuilderScreensFromTemplate } from '@/features/templates/utils/buildFormFromTemplate';
 import { buildBlankOnboardingForm, buildFormFromTemplate } from '../utils/createFormFromTemplate';
+import { navigateToFormBuilder } from '@/features/forms/utils/navigateToFormBuilder';
 
 const OnboardingChooseTemplatePage = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { templates, status } = useTemplates();
+  const step = useSelector(selectOnboardingStep);
   const selectedTemplateId = useSelector((s) => s.onboarding.selectedTemplateId);
+
+  useEffect(() => {
+    if (step < 1) {
+      navigate('/onboarding', { replace: true });
+    }
+  }, [step, navigate]);
   const [activeTab, setActiveTab] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [previewTemplate, setPreviewTemplate] = useState(null);
@@ -63,16 +72,18 @@ const OnboardingChooseTemplatePage = () => {
     dispatch(setOnboardingStep(3));
 
     // Finish onboarding only after the user saves in the form builder.
-    navigate('/dashboard/form-builder', {
-      replace: true,
-      state: {
+    navigateToFormBuilder(
+      navigate,
+      dispatch,
+      {
         templateId: template.id,
         templateTitle: template.title,
         formTitle: built?.formTitle ?? template.title,
         formId: newForm.id,
         fromOnboarding: true,
       },
-    });
+      { replace: true },
+    );
   };
 
   const handleContinue = () => {
@@ -84,10 +95,12 @@ const OnboardingChooseTemplatePage = () => {
     const newForm = buildBlankOnboardingForm();
     dispatch(addForm(newForm));
     dispatch(setOnboardingStep(3));
-    navigate('/dashboard/form-builder', {
-      replace: true,
-      state: { formTitle: newForm.title, formId: newForm.id, fromOnboarding: true },
-    });
+    navigateToFormBuilder(
+      navigate,
+      dispatch,
+      { formTitle: newForm.title, formId: newForm.id, fromOnboarding: true },
+      { replace: true },
+    );
   };
 
   const isLoading = status === 'loading';
@@ -95,24 +108,27 @@ const OnboardingChooseTemplatePage = () => {
   return (
     <>
       <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: previewOpen ? 0.6 : 1, y: 0 }}
-        transition={{ duration: 0.22, ease: [0.25, 0.1, 0.25, 1] }}
+        animate={{ opacity: previewOpen ? 0.55 : 1 }}
+        transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
         className={`flex flex-col min-h-full ${previewOpen ? 'pointer-events-none select-none' : ''}`}
         aria-hidden={previewOpen}
       >
         <OnboardingTopbar
           activeStep={previewOpen ? 2 : 1}
-          showBack={previewOpen}
-          onBack={closePreview}
+          showBack
+          onBack={
+            previewOpen
+              ? closePreview
+              : () => {
+                  dispatch(setOnboardingStep(0));
+                  navigate('/onboarding');
+                }
+          }
           onContinue={previewOpen ? () => goToBuilder(previewTemplate) : handleContinue}
           continueDisabled={previewOpen ? false : !selectedTemplateId}
         />
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.24, ease: [0.25, 0.1, 0.25, 1], delay: 0.04 }}
+        <div
           className={`flex-1 min-h-0 px-8 py-10 max-w-[1200px] mx-auto w-full ${
             previewOpen ? 'overflow-hidden' : 'overflow-y-auto'
           }`}
@@ -196,7 +212,7 @@ const OnboardingChooseTemplatePage = () => {
               No templates match your search. Try another term or category.
             </p>
           )}
-        </motion.div>
+        </div>
       </motion.div>
 
       <OnboardingTemplatePreviewModal

@@ -1,4 +1,5 @@
 import { FORM_COLOR_OPTIONS, getFormColorTheme } from '@/features/forms/constants/formColorThemes';
+import { NO_WORKSPACE_ID } from '@/features/forms/constants/workspaces';
 
 export const buildFormFromTemplate = (template) => {
   const theme = getFormColorTheme(FORM_COLOR_OPTIONS[0].id);
@@ -8,7 +9,7 @@ export const buildFormFromTemplate = (template) => {
     status: 'draft',
     responses: 0,
     timeAgo: 'just now',
-    workspace: 'product',
+    workspace: NO_WORKSPACE_ID,
     gradientFrom: theme.gradientFrom,
     gradientTo: theme.gradientTo,
     overlayColor: theme.overlayColor,
@@ -25,7 +26,7 @@ export const buildBlankOnboardingForm = (title = 'Untitled') => {
     status: 'draft',
     responses: 0,
     timeAgo: 'just now',
-    workspace: 'product',
+    workspace: NO_WORKSPACE_ID,
     gradientFrom: theme.gradientFrom,
     gradientTo: theme.gradientTo,
     overlayColor: theme.overlayColor,

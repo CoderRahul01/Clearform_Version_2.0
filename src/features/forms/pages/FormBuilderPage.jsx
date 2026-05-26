@@ -11,11 +11,14 @@ import { updateForm } from '@/store/slices/formsSlice';
 import { selectIsOnboardingActive } from '@/store/slices/onboardingSlice';
 import { useToast } from '@/hooks/useToast';
 import { readBuilderDraft, writeBuilderDraft, clearBuilderDraft } from '@/features/forms/utils/builderDraftStorage';
+import { readPublishedForm, writePublishedForm } from '@/features/forms/utils/publishedFormStorage';
+import { buildPublishSnapshot, buildLogicMeta } from '@/features/forms/utils/buildPublishSnapshot';
+import { canPublishForm, getPublishBlockers } from '@/features/forms/utils/formPublishReadiness';
 import { buildFormFromTemplate } from '@/features/templates/utils/buildFormFromTemplate';
 import {
   applyScreenConfig,
   extractScreenConfig,
-  getScreenPreviewText,
+  getBuilderScreenPreviewText,
 } from '@/features/forms/utils/screenConfigSync';
 import { motion, AnimatePresence, LayoutGroup } from 'motion/react';
 import {
@@ -65,17 +68,43 @@ import {
   RiArrowUpSLine,
 } from 'react-icons/ri';
 import { PiCaretCircleUp } from 'react-icons/pi';
+
+import ContentCard from '@/features/forms/formBuilder/BuilderContentCard';
+import {
+  buildCanvasFieldConfigs,
+  FIELD_LABEL_TO_CONFIG_PANEL,
+  resolveBuilderTheme,
+} from '@/features/forms/formBuilder/buildCanvasFieldConfigs';
+import FormBuilderRightPanels from '@/features/forms/formBuilder/FormBuilderRightPanels';
+import {
+  BUILDER_TAB_MOTION,
+  PANEL_SWITCH_DELAY_MS,
+  SIDEBAR_ROW_MOTION,
+  SIDEBAR_ROW_TRANSITION,
+} from '@/features/forms/formBuilder/builderMotion';
+import FormBuilderSettingsPanel from '@/features/forms/components/FormBuilderSettingsPanel';
+import FormBuilderStepBar from '@/features/forms/formBuilder/FormBuilderStepBar';
+import { useFormBuilderRoute } from '@/features/forms/formBuilder/useFormBuilderRoute';
+import { finishBuilderRouteTransition } from '@/store/slices/uiSlice';
+import FormBuilderLoadingFallback from '@/features/forms/pages/FormBuilderLoadingFallback';
+import * as builderScreenMaps from '@/features/forms/formBuilder/builderScreenMaps';
+import {
+  ESSENTIALS,
+  CONTENT_SECTIONS,
+  QUESTION_TEMPLATE_CATEGORIES,
+  CONFIGURE_TILE_GRID,
+  CONFIGURE_TILE_BASE,
+  ACCORDION_SECTIONS,
+  CTA_COLOR_PALETTE,
+} from '@/features/forms/formBuilder/builderConfiguratorConstants';
+
 import clearformLogo from '@/assets/clearform-high-resolution-logo-transparent.png';
-import Sidebar from '@/components/layout/Sidebar';
 import IfThenLogicPanel, { createEmptyRule } from '@/features/forms/components/IfThenLogicPanel';
 import FormPublishView from '@/features/forms/components/FormPublishView';
 import DeleteScreenModal from '@/features/forms/components/DeleteScreenModal';
 import UnsavedChangesModal from '@/features/forms/components/UnsavedChangesModal';
 import PublishFormModal from '@/features/forms/components/PublishFormModal';
-import MapFieldStaticPreview from '@/features/forms/components/MapFieldStaticPreview';
 
-const MapLocationPicker = lazy(() => import('@/features/forms/components/MapLocationPicker'));
-import MapConfigurePanel from '@/features/forms/components/MapConfigurePanel';
 import TimeConfigurePanel from '@/features/forms/components/TimeConfigurePanel';
 import {
   applySecondsToSelection,
@@ -85,7 +114,6 @@ import {
   to24Hour,
   from24Hour,
 } from '@/features/forms/utils/timeFieldUtils';
-import { DEFAULT_MAP_CENTER } from '@/features/forms/utils/mapGeocoding';
 import {
   formatFileSizeCompact,
   formatMaxSizeLabel,
@@ -125,6 +153,17 @@ import {
 } from '@/features/forms/utils/logicEngine';
 
 const LOGIC_STORAGE_KEY = 'clearform-builder-logic-v1';
+const logicStorageKeyForForm = (formId) =>
+  formId == null ? LOGIC_STORAGE_KEY : `${LOGIC_STORAGE_KEY}-${formId}`;
+
+const isUsableBuilderSnapshot = (snapshot) =>
+  snapshot && typeof snapshot === 'object' && Array.isArray(snapshot.screens) && snapshot.screens.length > 0;
+
+const builderSnapshotTime = (snapshot) =>
+  Number(snapshot?.savedAt ?? snapshot?.publishedAt ?? 0);
+
+const newestBuilderSnapshot = (...snapshots) =>
+  snapshots.filter(isUsableBuilderSnapshot).sort((a, b) => builderSnapshotTime(b) - builderSnapshotTime(a))[0] ?? null;
 
 /** Migrate legacy per-screen rules into per-connection keys. */
 const migrateLogicIfRulesToEdges = (byScreen = {}) => {
@@ -358,6 +397,8 @@ const LOGIC_BOARD_PAD_Y = 40;
 /** Connector anchor offsets — half of port control size places curve endpoints outside the card edge */
 const LOGIC_CONNECTOR_IN_R = 4;
 const LOGIC_CONNECTOR_OUT_R = 10;
+/** Match SVG marker `refX` so arrow tips land on port centers */
+const LOGIC_PORT_STUB = 7;
 /** Horizontal offset when placing the logic menu to the left of a port */
 const LOGIC_CONNECTOR_MENU_W = 148;
 /** Rendered dropdown width (Tailwind `w-[125px]`) — used for viewport clamping */
@@ -767,7 +808,7 @@ const LogicEdgePathGroup = ({
     edgeKey,
     kind,
     disconnectHoveredKey,
-    kindHoveredKey
+    kindHoveredKey,
   );
   if (hitsOnly) {
     return (
@@ -996,6 +1037,8 @@ const logicConnectionEndpoints = (c, byFrom, byTo, a, b) => {
 
   const useFromTrunk = nF > 1;
   const useToTrunk = nT > 1;
+  const outY = a.outY ?? a.portY;
+  const inY = b.inY ?? b.portY;
 
   let prefixWaypoints = [];
   let suffixWaypoints = [];
@@ -1003,163 +1046,35 @@ const logicConnectionEndpoints = (c, byFrom, byTo, a, b) => {
   if (useFromTrunk) {
     const trunkX = a.outX + LOGIC_IF_TRUNK_PX;
     prefixWaypoints = [
-      { x: trunkX, y: a.portY },
-      { x: trunkX, y: a.portY + dy0 },
+      { x: trunkX, y: outY },
+      { x: trunkX, y: outY + dy0 },
     ];
   }
   if (useToTrunk) {
     const approachX = b.inX - LOGIC_IF_TRUNK_PX;
     suffixWaypoints = [
-      { x: approachX, y: b.portY + dy1 },
-      { x: approachX, y: b.portY },
+      { x: approachX, y: inY + dy1 },
+      { x: approachX, y: inY },
     ];
   }
 
   return {
     x0: a.outX,
-    y0: useFromTrunk ? a.portY : a.portY + dy0,
+    y0: useFromTrunk ? outY : outY + dy0,
     x1: b.inX,
-    y1: useToTrunk ? b.portY : b.portY + dy1,
+    y1: useToTrunk ? inY : inY + dy1,
     prefixWaypoints,
     suffixWaypoints,
   };
 };
 
-/* ── Configure panel: essentials grid items ── */
-const ESSENTIALS = [
-  { label: 'CTA', Icon: BoxesIcon },
-  { label: 'Heading', Icon: TextHIcon },
-  { label: 'Description', Icon: TextAlignLeftIcon },
-  { label: 'Text Box', Icon: ShortTextIcon },
-  { label: 'Images', Icon: ImagesCardIcon },
-  { label: 'Video', Icon: VideoCardIcon },
-  { label: 'Captcha', Icon: RiRobot2Line },
-];
-
-const CONFIGURE_TILE_GRID = 'grid grid-cols-3 gap-1 items-start pb-[2px]';
-const CONFIGURE_TILE_BASE =
-  'flex flex-col items-center justify-center gap-[2px] h-[40px] w-full px-0.5 rounded-[6px] border cursor-pointer transition-colors';
-
-/* ── Configure panel: collapsible sections ── */
-const ACCORDION_SECTIONS = [
-  { key: 'questionTemplates', label: 'Question Templates' },
-  { key: 'fieldSettings', label: 'Field Settings' },
-  { key: 'appearance', label: 'Appearance' },
-];
-
-/* ── Question template categories ── */
-const QUESTION_TEMPLATE_CATEGORIES = [
-  {
-    label: 'Building Blocks',
-    items: [
-      { label: 'CTA', Icon: BoxesIcon },
-      { label: 'Heading', Icon: TextHIcon },
-      { label: 'Description', Icon: TextAlignLeftIcon },
-      { label: 'Images', Icon: ImagesCardIcon },
-      { label: 'Video', Icon: VideoCardIcon },
-    ],
-  },
-  {
-    label: 'Basic Information',
-    items: [
-      { label: 'Contact', Icon: RiIdCardLine },
-      { label: 'Address', Icon: RiMapPinLine },
-      { label: 'Work Info', Icon: RiBriefcaseLine },
-    ],
-  },
-  {
-    label: 'Qualitative Inputs',
-    items: [
-      { label: 'Short text', Icon: ShortTextIcon },
-      { label: 'Long text', Icon: LongTextIcon },
-    ],
-  },
-  {
-    label: 'Choice Based',
-    items: [
-      { label: 'Single', Icon: RiRadioButtonLine },
-      { label: 'Multiple', Icon: RiCheckboxLine },
-      { label: 'Media', Icon: RiImageLine },
-    ],
-  },
-  {
-    label: 'Interactive',
-    items: [
-      { label: 'Maps', Icon: RiCompassLine },
-      { label: 'Upload', Icon: RiFileUploadLine },
-      { label: 'Multi-image upload', Icon: RiImageLine },
-      { label: 'Captcha', Icon: RiRobot2Line },
-    ],
-  },
-  {
-    label: 'Numeric Inputs',
-    items: [
-      { label: 'Rating', Icon: RiStarLine },
-      { label: 'Time', Icon: RiTimeLine },
-      { label: 'Date', Icon: RiCalendarLine },
-    ],
-  },
-];
-
-/* ── Content panel sections (shown when Add Screen is clicked after intro) ── */
-const CONTENT_SECTIONS = [
-  {
-    key: 'buildingBlocks',
-    label: 'Building Blocks',
-    items: [
-      { label: 'CTA', Icon: BoxesIcon },
-      { label: 'Heading', Icon: TextHIcon },
-      { label: 'Description', Icon: TextAlignLeftIcon },
-      { label: 'Images', Icon: ImagesCardIcon },
-      { label: 'Video', Icon: VideoCardIcon },
-    ],
-  },
-  {
-    key: 'basicInfo',
-    label: 'Basic Information',
-    items: [
-      { label: 'Contact', Icon: RiIdCardLine },
-      { label: 'Address', Icon: RiMapPinLine },
-      { label: 'Work Info', Icon: RiLinkedinBoxLine },
-    ],
-  },
-  {
-    key: 'qualitative',
-    label: 'Qualitative Inputs',
-    items: [
-      { label: 'Short text', Icon: ShortTextIcon },
-      { label: 'Long text', Icon: LongTextIcon },
-    ],
-  },
-  {
-    key: 'choiceBased',
-    label: 'Choice Based',
-    items: [
-      { label: 'Single', Icon: RiRadioButtonLine },
-      { label: 'Multiple', Icon: RiCheckboxLine },
-      { label: 'Media', Icon: RiImageLine },
-    ],
-  },
-  {
-    key: 'interactive',
-    label: 'Interactive',
-    items: [
-      { label: 'Maps', Icon: RiCompassLine },
-      { label: 'Upload', Icon: RiFileUploadLine },
-      { label: 'Multi-image upload', Icon: RiImageLine },
-      { label: 'Captcha', Icon: RiRobot2Line },
-    ],
-  },
-  {
-    key: 'numeric',
-    label: 'Numeric Inputs',
-    items: [
-      { label: 'Rating', Icon: RiStarLine },
-      { label: 'Time', Icon: RiTimeLine },
-      { label: 'Date', Icon: RiCalendarLine },
-    ],
-  },
-];
+/** Pull path endpoints through port centers so stroke + arrowhead overlap the anchor dots */
+const applyLogicPortStubs = (x0, y0, x1, y1) => ({
+  x0: x0 - LOGIC_PORT_STUB,
+  y0,
+  x1: x1 + LOGIC_PORT_STUB,
+  y1,
+});
 
 /* ── Design themes ── */
 const THEMES = [
@@ -1209,56 +1124,6 @@ const hexToRgba = (hex, opacity) => {
   return `rgba(${r}, ${g}, ${b}, ${(opacity / 100).toFixed(2)})`;
 };
 
-/* ── CTA configure panel – text-color palette (6 rows × 8 cols) ── */
-const CTA_COLOR_PALETTE = [
-  ['#ffffff', '#ffffff', '#f3f4f6', '#d1d5db', '#9ca3af', '#6b7280', '#374151', '#111827'],
-  ['#fee2e2', '#fecaca', '#fca5a5', '#f87171', '#ef4444', '#dc2626', '#b91c1c', '#7f1d1d'],
-  ['#fef9c3', '#fef08a', '#fde047', '#facc15', '#eab308', '#ca8a04', '#a16207', '#713f12'],
-  ['#dcfce7', '#bbf7d0', '#86efac', '#4ade80', '#22c55e', '#16a34a', '#15803d', '#14532d'],
-  ['#dbeafe', '#bfdbfe', '#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1d4ed8', '#1e3a8a'],
-  ['#fae8ff', '#f5d0fe', '#e879f9', '#d946ef', '#a855f7', '#9333ea', '#7e22ce', '#581c87'],
-];
-
-/* ── Content card helpers ── */
-
-const CardShell = ({ children, fullCanvas = false, cardColor = '#f7f6f4', cardImage = null, scrollable = false, footer = null }) => {
-  const borderAndRadius = fullCanvas ? '' : 'border border-[rgba(0,0,0,0.07)] rounded-[20px]';
-  const shellStyle = fullCanvas ? {} : {
-    ...(cardImage
-      ? { backgroundImage: `url(${cardImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-      : { backgroundColor: cardColor }),
-    boxShadow: '0px 1px 3px 0px rgba(0,0,0,0.05), 0px 8px 32px 0px rgba(0,0,0,0.07)',
-  };
-
-  if (footer) {
-    return (
-      <div
-        className={`flex-1 flex flex-col min-h-0 transition-colors duration-300 ${borderAndRadius}`}
-        style={shellStyle}
-      >
-        <div
-          className={`flex-1 flex flex-col min-h-0 ${
-            scrollable ? 'overflow-y-auto overflow-x-hidden' : 'overflow-hidden justify-between'
-          }`}
-        >
-          {children}
-        </div>
-        {footer}
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={`${scrollable ? 'overflow-y-auto min-h-0' : 'overflow-hidden'} flex-1 flex flex-col justify-between transition-colors duration-300 ${borderAndRadius}`}
-      style={shellStyle}
-    >
-      {children}
-    </div>
-  );
-};
-
-/** Preview viewport chrome heights � Figma Clearform-Changes 2521:8332 */
 const PREVIEW_PAGE_INDICATOR_H = 34;
 const PREVIEW_POWERED_BY_H = 38;
 const PREVIEW_CHROME_H = PREVIEW_PAGE_INDICATOR_H + PREVIEW_POWERED_BY_H;
@@ -1342,2987 +1207,35 @@ const PreviewRequiredInline = ({ show }) =>
     </span>
   ) : null;
 
-const SectionBadge = ({ num, label }) => (
-  <div className="flex gap-[8px] items-center">
-    <div className="bg-[#111] w-[26px] h-[26px] rounded-[6px] flex items-center justify-center shrink-0">
-      <span className="text-white text-[13px] font-semibold leading-none">{num}</span>
-    </div>
-    <span className="text-[#888] text-[15px] tracking-[0.42px]">{label}</span>
-  </div>
-);
+const {
+  SCREEN_ICON_MAP,
+  LABEL_TO_CONFIG_PANEL,
+  WELCOME_TEXT_SIZE_DESKTOP,
+  WELCOME_TEXT_SIZE_MOBILE,
+  ESSENTIAL_TO_BLOCK,
+  SCREEN_ICON_BADGE_HEX,
+} = builderScreenMaps;
 
-const FormField = ({ label, value }) => (
-  <div className="flex flex-col w-full">
-    <p className="text-[#888] text-[10.5px] font-medium tracking-[0.42px] uppercase pb-[6px]">{label}</p>
-    <div className="border-b border-[rgba(0,0,0,0.16)] pb-[9px] pt-[8px]">
-      <p className="text-[14px] text-black font-light">{value}</p>
-    </div>
-  </div>
-);
-
-/** Editable text field for preview/fill mode (replaces static {@link FormField} samples). */
-const PreviewLabeledInput = ({ label, value, onChange, placeholder = '', type = 'text' }) => (
-  <div className="flex flex-col w-full">
-    <label className="text-[#888] text-[10.5px] font-medium tracking-[0.42px] uppercase pb-[6px]">{label}</label>
-    <input
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      autoComplete="off"
-      className="w-full border-b border-[rgba(0,0,0,0.16)] pb-[9px] pt-[8px] text-[14px] text-black font-light bg-transparent outline-none focus:border-[#111] placeholder:text-[#bbb]"
-    />
-  </div>
-);
-
-const ContentCardFooter = ({ onDelete, variant = 'default' }) => (
-  <div className="border-t border-[rgba(0,0,0,0.1)] flex gap-2 items-center px-14 py-[19px]">
-    {variant === 'content' && (
-      <button className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap">
-        <RiPencilLine size={12} className="shrink-0" />
-        Edit content
-      </button>
-    )}
-    <button
-      onClick={onDelete}
-      className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-[rgba(255,245,245,0.7)] border border-[rgba(200,50,50,0.2)] text-[#d63030] text-[12px] cursor-pointer hover:bg-[rgba(255,235,235,0.9)] transition-colors whitespace-nowrap"
-    >
-      <RiDeleteBin6Line size={12} className="shrink-0" />
-      Delete
-    </button>
-    <div className="flex-1" />
-    <button className="flex items-center gap-[5px] px-[16px] py-[8px] rounded-[8px] bg-[#111] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap">
-      <RiCheckLine size={11} className="shrink-0" />
-      Save
-    </button>
-  </div>
-);
-
-const FileUploadCard = ({ blockNum, onDelete, config, isPreviewMode = false }) => {
-  const question = config?.question || 'Attach supporting documents';
-  const helperText = config?.helperText || 'Attach any files that help us understand your request better.';
-  const maxFileSizeLabel = config?.maxFileSize || '25 MB';
-  const maxBytes = parseMaxFileSizeBytes(maxFileSizeLabel);
-
-  const [uploadedFiles, setUploadedFiles] = useState([]);
-  const [sizeError, setSizeError] = useState(null);
-  const fileInputRef = useRef(null);
-
-  const startUploadProgress = (fileIds) => {
-    fileIds.forEach((fileId) => {
-      let prog = 0;
-      const tick = () => {
-        prog = Math.min(100, prog + Math.random() * 18 + 6);
-        setUploadedFiles((prev) =>
-          prev.map((f) => (f.id === fileId ? { ...f, progress: Math.round(prog) } : f))
-        );
-        if (prog < 100) setTimeout(tick, 80);
-      };
-      setTimeout(tick, 80);
-    });
-  };
-
-  const handleFileSelect = (e) => {
-    const selected = Array.from(e.target.files || []);
-    if (!selected.length) return;
-
-    const oversized = selected.find((f) => f.size > maxBytes);
-    if (oversized) {
-      setSizeError({ name: oversized.name, size: oversized.size });
-      e.target.value = '';
-      return;
-    }
-
-    setSizeError(null);
-
-    const newFiles = selected.map((f) => ({
-      id: `${Date.now()}-${Math.random()}`,
-      name: f.name,
-      size: f.size,
-      progress: 0,
-    }));
-
-    setUploadedFiles((prev) => [...prev, ...newFiles]);
-    startUploadProgress(newFiles.map((f) => f.id));
-    e.target.value = '';
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    const dt = e.dataTransfer;
-    if (dt?.files) {
-      handleFileSelect({ target: { files: dt.files } });
-    }
-  };
-
-  const handleRemove = (id) => {
-    setUploadedFiles((prev) => prev.filter((f) => f.id !== id));
-  };
-
-  const handleTryAnother = () => {
-    setSizeError(null);
-    fileInputRef.current?.click();
-  };
-
-  const formatSize = (bytes) => {
-    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / 1024).toFixed(0)} KB`;
-  };
-
-  const maxSizeHint = maxFileSizeLabel === 'No limit'
-    ? 'No size limit'
-    : `Max ${maxFileSizeLabel} per file`;
-
-  return (
-    <>
-      <div className="flex flex-col px-14 pt-11 pb-5">
-        <SectionBadge num={blockNum} label="File upload" />
-        <div className="pt-[9px]">
-          <p className="font-medium text-[#111] tracking-[-0.52px] leading-tight" style={{ fontSize: '26px' }}>{question}</p>
-        </div>
-        <p className="text-[#888] text-[15px] font-light mt-[2px] mb-5 leading-[1.6]">{helperText}</p>
-
-        {uploadedFiles.length > 0 && (
-          <div className="flex flex-col gap-[5px] mb-[5px]">
-            {uploadedFiles.map(file => (
-              <div key={file.id} className="bg-[rgba(255,255,255,0.6)] border border-[rgba(0,0,0,0.1)] rounded-[9px] flex gap-[10px] items-center px-[15px] py-[11px]">
-                <div className="bg-[rgba(0,0,0,0.06)] rounded-[7px] w-[32px] h-[32px] shrink-0 flex items-center justify-center">
-                  <RiFileTextLine size={16} className="text-[#666]" />
-                </div>
-                <div className="flex-1 min-w-0 flex flex-col gap-[5px]">
-                  <span className="font-medium text-[#111] text-[13px] leading-none truncate">{file.name}</span>
-                  {file.progress < 100 ? (
-                    <div className="bg-[rgba(0,0,0,0.1)] h-[2px] rounded-[2px] w-full overflow-hidden">
-                      <div className="bg-[#111] h-full rounded-[2px] transition-[width] duration-75" style={{ width: `${file.progress}%` }} />
-                    </div>
-                  ) : (
-                    <span className="text-[10px] text-[#888]">Upload complete</span>
-                  )}
-                </div>
-                <span className="text-[11px] text-black shrink-0">{formatSize(file.size)}</span>
-                <button
-                  onClick={() => handleRemove(file.id)}
-                  className="shrink-0 w-[22px] h-[22px] rounded-[5px] flex items-center justify-center hover:bg-[rgba(0,0,0,0.06)] transition-colors cursor-pointer"
-                >
-                  <RiDeleteBin6Line size={12} className="text-[#999]" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          accept=".pdf,.docx,.doc,.png,.jpg,.jpeg"
-          onChange={handleFileSelect}
-        />
-
-        {sizeError ? (
-          <div className="flex flex-col gap-[6px] mt-[5px] mb-5">
-            <div className="bg-[#fef2f2] border border-dashed border-[#e8271c] rounded-[8px] flex flex-col items-center gap-[2px] px-[25px] py-[33px]">
-              <p className="text-[24px] leading-[36px] opacity-50 text-[#141412]">&#9888;</p>
-              <p className="text-[#e8271c] text-[13px] font-medium leading-[19.5px] pt-[6px]">File too large</p>
-              <p className="text-[#9a9a94] text-[11.5px] text-center leading-[17.25px]">
-                {sizeError.name} is {formatFileSizeCompact(sizeError.size)} � max allowed is{' '}
-                {formatMaxSizeLabel(maxFileSizeLabel)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleTryAnother}
-              className="w-full bg-[#f7f7f5] border border-dashed border-[#e2e2de] rounded-[8px] py-[15px] px-[13px] text-[#5c5c56] text-[12px] text-center cursor-pointer hover:bg-[#f0f0ed] transition-colors"
-            >
-              + Try another file
-            </button>
-          </div>
-        ) : (
-          <div
-            className="bg-[rgba(255,255,255,0.4)] border border-dashed border-[rgba(0,0,0,0.16)] rounded-[12px] flex flex-col items-center gap-[10px] pt-[34px] pb-[50px] px-[25px] mt-[5px] mb-5 cursor-pointer"
-            onClick={() => fileInputRef.current?.click()}
-            onDrop={handleDrop}
-            onDragOver={(e) => e.preventDefault()}
-          >
-            <div className="bg-[rgba(0,0,0,0.06)] rounded-[10px] w-[40px] h-[40px] shrink-0 flex items-center justify-center pointer-events-none">
-              <RiFileUploadLine size={20} className="text-[#666]" />
-            </div>
-            <span className="font-medium text-[#111] text-[14px] text-center pointer-events-none">
-              {uploadedFiles.length > 0 ? 'Add another file' : 'Drop your files here'}
-            </span>
-            <div className="flex items-center gap-[10px] w-full pointer-events-none">
-              <div className="bg-[rgba(0,0,0,0.1)] h-px flex-1" />
-              <span className="text-[11px] text-black">or</span>
-              <div className="bg-[rgba(0,0,0,0.1)] h-px flex-1" />
-            </div>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-              className="bg-[rgba(255,255,255,0.8)] border border-[rgba(0,0,0,0.16)] rounded-[8px] flex items-center gap-[6px] px-[19px] py-[9px] cursor-pointer hover:bg-white transition-colors"
-            >
-              <RiAddLine size={13} className="text-[#444] shrink-0" />
-              <span className="font-medium text-[#444] text-[12.5px]">Browse files</span>
-            </button>
-            <span className="text-[11px] text-black text-center pointer-events-none">
-              PDF, DOCX, PNG, JPG &middot; {maxSizeHint}
-            </span>
-          </div>
-        )}
-      </div>
-      {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-    </>
-  );
-};
-
-const TimePickerStepBtn = ({ onClick, direction, ariaLabel }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    aria-label={ariaLabel}
-    className="bg-[rgba(255,255,255,0.6)] border border-[rgba(0,0,0,0.1)] h-[24px] w-[32px] rounded-[6px] flex items-center justify-center shrink-0 cursor-pointer hover:bg-white/90 transition-colors"
-  >
-    {direction === 'up'
-      ? <RiArrowUpSLine size={12} className="text-[#888]" />
-      : <RiArrowDownSLine size={12} className="text-[#888]" />}
-  </button>
-);
-
-const TimePickerColumn = ({ value, label, isActive, onActivate, onIncrement, onDecrement }) => (
-  <div className="flex flex-col gap-[4px] items-center shrink-0">
-    <TimePickerStepBtn direction="up" onClick={onIncrement} ariaLabel={`Increase ${label.toLowerCase()}`} />
-    <button
-      type="button"
-      onClick={onActivate}
-      className={`h-[44px] w-[64px] rounded-[10px] flex items-center justify-center shrink-0 border p-px cursor-pointer transition-colors ${
-        isActive
-          ? 'bg-[#111] border-[#111] text-white'
-          : 'bg-[rgba(255,255,255,0.7)] border-[rgba(0,0,0,0.16)] text-[#111]'
-      }`}
-    >
-      <span className="font-medium text-[22px] tracking-[0.44px] leading-none tabular-nums">
-        {String(value).padStart(2, '0')}
-      </span>
-    </button>
-    <TimePickerStepBtn direction="down" onClick={onDecrement} ariaLabel={`Decrease ${label.toLowerCase()}`} />
-    <span className="text-[10px] text-[#bbb] tracking-[0.6px] uppercase leading-none">{label}</span>
-  </div>
-);
-
-const TimePickerCard = ({
-  blockNum,
-  onDelete,
-  config,
-  isPreviewMode = false,
-  previewRequiredHint = false,
-  onTimeChange,
-}) => {
-  const question = config?.timeQuestion || 'What time works best for you?';
-  const helperText = config?.timeHelperText || 'Select your preferred time slot.';
-  const required = !!config?.timeRequired;
-  const use12h = config?.timeUse12h ?? false;
-  const showSeconds = !!config?.timeShowSeconds;
-  const minTime = config?.timeMinTime ?? '';
-  const maxTime = config?.timeMaxTime ?? '';
-
-  const [hour, setHour] = useState(10);
-  const [minute, setMinute] = useState(30);
-  const [second, setSecond] = useState(0);
-  const [period, setPeriod] = useState('AM');
-  const [activeColumn, setActiveColumn] = useState('hour');
-  const [rangeError, setRangeError] = useState(null);
-
-  const wrapHour12 = (n) => (n > 12 ? 1 : n < 1 ? 12 : n);
-  const wrapHour24 = (n) => (n > 23 ? 0 : n < 0 ? 23 : n);
-  const wrapMinute = (n) => (n > 59 ? 0 : n < 0 ? 59 : n);
-  const wrapSecond = (n) => (n > 59 ? 0 : n < 0 ? 59 : n);
-
-  const applyBounds = useCallback(
-    (h, m, s, p) => {
-      let secs = selectionToSeconds({ hour: h, minute: m, second: s, period: p, use12h });
-      if (!isTimeWithinBounds(secs, minTime, maxTime, { showSeconds })) {
-        secs = clampSeconds(secs, minTime, maxTime, { showSeconds });
-        return applySecondsToSelection(secs, { use12h, showSeconds });
-      }
-      return { hour: h, minute: m, second: s, period: p };
-    },
-    [use12h, showSeconds, minTime, maxTime],
-  );
-
-  const commitTime = useCallback(
-    (h, m, s, p) => {
-      const bounded = applyBounds(h, m, s, p);
-      setHour(bounded.hour);
-      setMinute(bounded.minute);
-      setSecond(bounded.second);
-      setPeriod(bounded.period);
-      const secs = selectionToSeconds({ ...bounded, use12h });
-      setRangeError(
-        isTimeWithinBounds(secs, minTime, maxTime, { showSeconds })
-          ? null
-          : 'Selected time is outside the allowed range.',
-      );
-      onTimeChange?.(bounded);
-    },
-    [applyBounds, use12h, minTime, maxTime, showSeconds, onTimeChange],
-  );
-
-  useEffect(() => {
-    if (!showSeconds) setSecond(0);
-  }, [showSeconds]);
-
-  useEffect(() => {
-    commitTime(hour, minute, second, period);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minTime, maxTime]);
-
-  const prevUse12h = useRef(use12h);
-  useEffect(() => {
-    if (prevUse12h.current === use12h) return;
-    prevUse12h.current = use12h;
-    if (use12h) {
-      const { hour12, period: p } = from24Hour(to24Hour(hour, period));
-      commitTime(hour12, minute, second, p);
-    } else {
-      commitTime(to24Hour(hour, period), minute, second, period);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [use12h]);
-
-  return (
-    <>
-      <div className="flex flex-col px-14 pt-11 pb-5">
-        <SectionBadge num={blockNum} label="Time picker" />
-        <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <p className="font-medium text-[#111] tracking-[-0.52px] leading-[32.5px] flex-1 min-w-0" style={{ fontSize: '26px' }}>
-            {question}
-            {required && <span className="text-red-600 ml-1">*</span>}
-          </p>
-          <PreviewRequiredInline show={previewRequiredHint} />
-        </div>
-        {helperText && (
-          <p className="text-[#888] text-[13px] font-light leading-[20.8px]">{helperText}</p>
-        )}
-        <div className="flex gap-[8px] items-center justify-center pb-[17px] pt-[19px] w-full">
-          <TimePickerColumn
-            value={hour}
-            label="Hour"
-            isActive={activeColumn === 'hour'}
-            onActivate={() => setActiveColumn('hour')}
-            onIncrement={() =>
-              commitTime(
-                use12h ? wrapHour12(hour + 1) : wrapHour24(hour + 1),
-                minute,
-                second,
-                period,
-              )
-            }
-            onDecrement={() =>
-              commitTime(
-                use12h ? wrapHour12(hour - 1) : wrapHour24(hour - 1),
-                minute,
-                second,
-                period,
-              )
-            }
-          />
-          <span className="text-[#888] text-[22px] font-light leading-none pb-[18px] shrink-0">:</span>
-          <TimePickerColumn
-            value={minute}
-            label="Minute"
-            isActive={activeColumn === 'minute'}
-            onActivate={() => setActiveColumn('minute')}
-            onIncrement={() => commitTime(hour, wrapMinute(minute + 1), second, period)}
-            onDecrement={() => commitTime(hour, wrapMinute(minute - 1), second, period)}
-          />
-          {showSeconds && (
-            <>
-              <span className="text-[#888] text-[22px] font-light leading-none pb-[18px] shrink-0">:</span>
-              <TimePickerColumn
-                value={second}
-                label="Second"
-                isActive={activeColumn === 'second'}
-                onActivate={() => setActiveColumn('second')}
-                onIncrement={() => commitTime(hour, minute, wrapSecond(second + 1), period)}
-                onDecrement={() => commitTime(hour, minute, wrapSecond(second - 1), period)}
-              />
-            </>
-          )}
-          {use12h && (
-            <div className="flex flex-col gap-[4px] pl-[4px] shrink-0">
-              {(['AM', 'PM']).map((p) => {
-                const selected = period === p;
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => commitTime(hour, minute, second, p)}
-                    className={`rounded-[7px] px-[15px] py-[9px] text-[12px] cursor-pointer transition-colors border ${
-                      selected
-                        ? 'bg-[#111] border-[#111] text-white font-medium'
-                        : 'border-[rgba(0,0,0,0.16)] text-[#888] font-normal hover:bg-[rgba(0,0,0,0.03)]'
-                    }`}
-                  >
-                    {p}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        {rangeError && (
-          <p className="text-center text-[11px] text-[#d63030] pb-2 -mt-2">{rangeError}</p>
-        )}
-      </div>
-      {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-    </>
-  );
-};
-
-const MultiImageUploadCard = ({ blockNum, onDelete, config, fullCanvas = false, cardColor = '#f7f6f4', cardImage = null, isPreviewMode = false, previewStepNav = null, previewScreenValidatorRef }) => {
-  const question   = config?.question   || 'Upload photos of the issue';
-  const helperText = config?.helperText || 'Add up to 9 images. Drag to reorder.';
-  const maxImages  = config?.maxFiles   || 9;
-  const maxFileSizeLabel = config?.maxFileSize || '25 MB';
-  const maxBytes = parseMaxFileSizeBytes(maxFileSizeLabel);
-  const required   = !!config?.required;
-
-  const [images, setImages]       = useState([]);
-  const [sizeError, setSizeError] = useState(null);
-  const [dragIndex, setDragIndex] = useState(null);
-  const [dragOver, setDragOver]   = useState(null);
-  const [addHovered, setAddHovered] = useState(false);
-  const [previewRequiredHint, setPreviewRequiredHint] = useState(false);
-  const fileInputRef = useRef(null);
-
-  const snapRef = useRef({});
-  snapRef.current = { required, imageCount: images.length };
-
-  useEffect(() => {
-    setPreviewRequiredHint(false);
-  }, [images]);
-
-  useEffect(() => {
-    if (!previewScreenValidatorRef) return undefined;
-    if (!isPreviewMode) {
-      previewScreenValidatorRef.current = null;
-      return undefined;
-    }
-
-    previewScreenValidatorRef.current = () => {
-      const { required: rq, imageCount } = snapRef.current;
-      if (!rq) {
-        setPreviewRequiredHint(false);
-        return true;
-      }
-      const ok = imageCount > 0;
-      setPreviewRequiredHint(!ok);
-      return ok;
-    };
-    return () => {
-      previewScreenValidatorRef.current = null;
-    };
-  }, [isPreviewMode, previewScreenValidatorRef, required]);
-
-  const handleSelect = (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-
-    const oversized = files.find((f) => f.size > maxBytes);
-    if (oversized) {
-      setSizeError({ name: oversized.name, size: oversized.size });
-      e.target.value = '';
-      return;
-    }
-
-    setSizeError(null);
-    const remaining = maxImages - images.length;
-    const toAdd = files.slice(0, remaining).map((f) => ({
-      id: `${Date.now()}-${Math.random()}`,
-      url: URL.createObjectURL(f),
-    }));
-    setImages((prev) => [...prev, ...toAdd]);
-    e.target.value = '';
-  };
-
-  const handleTryAnother = () => {
-    setSizeError(null);
-    fileInputRef.current?.click();
-  };
-
-  const handleRemove = (id) => {
-    setImages(prev => {
-      const removed = prev.find(img => img.id === id);
-      if (removed) URL.revokeObjectURL(removed.url);
-      return prev.filter(img => img.id !== id);
-    });
-  };
-
-  /* ── Drag-to-reorder handlers ── */
-  const handleDragStart = (e, index) => {
-    setDragIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragEnter = (index) => {
-    if (dragIndex === null || dragIndex === index) return;
-    setDragOver(index);
-  };
-
-  const handleDrop = (e, index) => {
-    e.preventDefault();
-    if (dragIndex === null || dragIndex === index) return;
-    setImages(prev => {
-      const next = [...prev];
-      const [moved] = next.splice(dragIndex, 1);
-      next.splice(index, 0, moved);
-      return next;
-    });
-    setDragIndex(null);
-    setDragOver(null);
-  };
-
-  const handleDragEnd = () => {
-    setDragIndex(null);
-    setDragOver(null);
-  };
-
-  const isAtMax = images.length >= maxImages;
-
-  return (
-    <CardShell fullCanvas={fullCanvas} cardColor={cardColor} cardImage={cardImage} footer={isPreviewMode && previewStepNav ? previewStepNav : null}>
-      <div className="flex flex-col px-14 pt-11 pb-4">
-        <SectionBadge num={blockNum} label="Multi-image upload" />
-        <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <p className="font-medium text-[#111] tracking-[-0.52px] leading-tight flex-1 min-w-0" style={{ fontSize: '26px' }}>
-            {question}
-          </p>
-          <PreviewRequiredInline show={previewRequiredHint} />
-        </div>
-        <p className="text-[#888] text-[15px] font-light mt-[2px] leading-[1.6]">{helperText}</p>
-
-        {sizeError && (
-          <div className="flex flex-col gap-[6px] mt-[14px]">
-            <div className="bg-[#fef2f2] border border-dashed border-[#e8271c] rounded-[8px] flex flex-col items-center gap-[2px] px-[25px] py-[33px]">
-              <p className="text-[24px] leading-[36px] opacity-50 text-[#141412]">&#9888;</p>
-              <p className="text-[#e8271c] text-[13px] font-medium leading-[19.5px] pt-[6px]">File too large</p>
-              <p className="text-[#9a9a94] text-[11.5px] text-center leading-[17.25px]">
-                {sizeError.name} is {formatFileSizeCompact(sizeError.size)} � max allowed is{' '}
-                {formatMaxSizeLabel(maxFileSizeLabel)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleTryAnother}
-              className="w-full bg-[#f7f7f5] border border-dashed border-[#e2e2de] rounded-[8px] py-[15px] px-[13px] text-[#5c5c56] text-[12px] text-center cursor-pointer hover:bg-[#f0f0ed] transition-colors"
-            >
-              + Try another file
-            </button>
-          </div>
-        )}
-
-        {/* Counter + drag hint — only show once images exist */}
-        {images.length > 0 && (
-          <div className="flex items-center justify-between mt-[14px]">
-            <span className="text-[#888] text-[11.5px]">{images.length} of {maxImages} uploaded</span>
-            <div className="flex items-center gap-[4px]">
-              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="0" y="1"    width="11" height="1.5" rx="0.75" fill="#111" />
-                <rect x="0" y="4.75" width="11" height="1.5" rx="0.75" fill="#111" />
-                <rect x="0" y="8.5"  width="11" height="1.5" rx="0.75" fill="#111" />
-              </svg>
-              <span className="text-[11px] text-[#111]">Drag to reorder</span>
-            </div>
-          </div>
-        )}
-
-        {/* Image grid — 4 per row, scrollable so card never expands */}
-        <div className="mt-[10px] mb-[4px] overflow-y-auto" style={{ maxHeight: '250px' }}>
-          <div className="grid grid-cols-4 gap-[6px]">
-            {images.map((img, index) => (
-              <div
-                key={img.id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, index)}
-                onDragEnter={() => handleDragEnter(index)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleDrop(e, index)}
-                onDragEnd={handleDragEnd}
-                className={`relative rounded-[8px] overflow-hidden aspect-square border transition-all cursor-grab active:cursor-grabbing select-none ${
-                  dragOver === index
-                    ? 'border-[#111] scale-[0.96] opacity-70'
-                    : dragIndex === index
-                    ? 'border-[rgba(0,0,0,0.1)] opacity-40'
-                    : 'border-[rgba(0,0,0,0.1)]'
-                }`}
-              >
-                <img src={img.url} alt="" className="w-full h-full object-cover pointer-events-none" />
-                <button
-                  onClick={() => handleRemove(img.id)}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  className="absolute top-[4px] right-[4px] w-[16px] h-[16px] rounded-full flex items-center justify-center backdrop-blur-[2px] bg-[rgba(0,0,0,0.5)] cursor-pointer hover:bg-[rgba(0,0,0,0.7)] transition-colors"
-                >
-                  <span className="text-white text-[9px] leading-none">×</span>
-                </button>
-              </div>
-            ))}
-
-            {/* Add photo slot — always visible; disabled + tooltip when at max */}
-            <div className="relative aspect-square">
-              {addHovered && (
-                <div className="absolute bottom-[calc(100%+6px)] left-1/2 -translate-x-1/2 bg-[#111] text-white text-[10px] px-[8px] py-[4px] rounded-[5px] whitespace-nowrap z-10 pointer-events-none">
-                  {isAtMax ? 'Max 9 reached' : 'Add photo'}
-                  <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#111]" />
-                </div>
-              )}
-              <button
-                onClick={() => !isAtMax && fileInputRef.current?.click()}
-                onMouseEnter={() => setAddHovered(true)}
-                onMouseLeave={() => setAddHovered(false)}
-                disabled={isAtMax}
-                className={`w-full h-full border border-dashed rounded-[8px] flex flex-col items-center justify-center gap-[4px] transition-colors ${
-                  isAtMax
-                    ? 'border-[rgba(0,0,0,0.08)] bg-[rgba(0,0,0,0.02)] cursor-not-allowed opacity-40'
-                    : 'border-[rgba(0,0,0,0.16)] bg-[rgba(255,255,255,0.4)] cursor-pointer hover:bg-[rgba(255,255,255,0.7)]'
-                }`}
-              >
-                <RiAddLine size={16} className={isAtMax ? 'text-[#bbb]' : 'text-[#555]'} />
-                <span className={`text-[10px] ${isAtMax ? 'text-[#bbb]' : 'text-[#555]'}`}>Add photo</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept="image/*"
-          className="hidden"
-          onChange={handleSelect}
-        />
-      </div>
-      {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-    </CardShell>
-  );
-};
-
-const CTA_CONTENT_WIDTH_MAP = { Narrow: '280px', Default: '320px', Wide: '480px' };
-const HEADING_FONT_WEIGHT_MAP = { Light: '300', Regular: '500', Bold: '700' };
-const VIDEO_WIDTH_STYLES = {
-  Full: { width: '100%' },
-  Wide: { width: '90%', maxWidth: '90%', marginLeft: 'auto', marginRight: 'auto' },
-  Medium: { width: '75%', maxWidth: '75%', marginLeft: 'auto', marginRight: 'auto' },
-  Small: { width: '55%', maxWidth: '55%', marginLeft: 'auto', marginRight: 'auto' },
-};
-const VIDEO_ASPECT_RATIO_MAP = { '16:9': '16 / 9', '4:3': '4 / 3', '1:1': '1 / 1' };
-
-/** Parse YouTube/Vimeo URL respecting the selected video source in configure */
-function parseVideoEmbed(url, preferredSource = 'youtube') {
-  if (!url?.trim()) return null;
-  const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
-  const isVimeo = url.includes('vimeo.com');
-
-  if (preferredSource === 'vimeo' && !isVimeo) return null;
-  if (preferredSource === 'youtube' && !isYoutube) return null;
-
-  if (isYoutube) {
-    const videoId = url.match(/(?:v=|youtu\.be\/|embed\/)([^&?/]+)/)?.[1];
-    return videoId
-      ? { type: 'youtube', embedBase: `https://www.youtube.com/embed/${videoId}`, videoId }
-      : null;
-  }
-  if (isVimeo) {
-    const videoId = url.match(/vimeo\.com\/(\d+)/)?.[1];
-    return videoId
-      ? { type: 'vimeo', embedBase: `https://player.vimeo.com/video/${videoId}`, videoId }
-      : null;
-  }
-  return null;
-}
-
-function buildVideoEmbedUrl(parsed, { autoplay = false, loop = false, showControls = true } = {}) {
-  if (!parsed) return null;
-  const params = new URLSearchParams();
-  if (parsed.type === 'youtube') {
-    if (autoplay) {
-      params.set('autoplay', '1');
-      params.set('mute', '1');
-    }
-    if (loop) {
-      params.set('loop', '1');
-      params.set('playlist', parsed.videoId);
-    }
-    if (!showControls) params.set('controls', '0');
-    params.set('rel', '0');
-  } else {
-    if (autoplay) params.set('autoplay', '1');
-    if (loop) params.set('loop', '1');
-    if (!showControls) params.set('controls', '0');
-  }
-  const qs = params.toString();
-  return qs ? `${parsed.embedBase}?${qs}` : parsed.embedBase;
-}
-
-const TEXT_VALIDATION_INPUT_TYPE = {
-  None: 'text',
-  Email: 'email',
-  URL: 'url',
-  Number: 'number',
-  Phone: 'tel',
-};
-
-function validateTextValue(value, validation) {
-  const v = String(value ?? '').trim();
-  if (!v || !validation || validation === 'None') return true;
-  switch (validation) {
-    case 'Email':
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-    case 'URL': {
-      try {
-        const u = v.startsWith('http://') || v.startsWith('https://') ? v : `https://${v}`;
-        new URL(u);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-    case 'Number':
-      return v !== '' && !Number.isNaN(Number(v));
-    case 'Phone':
-      return /^[\d\s\-+().]{7,}$/.test(v);
-    default:
-      return true;
-  }
-}
-
-/** Block-level or per-field required flag for contact/address/work composite fields */
-function isCompositeFieldRequired(blockRequired, field) {
-  return !!(blockRequired || field?.required);
-}
-
-function shuffleArray(items) {
-  const a = [...items];
-  for (let i = a.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function getChoicePickCount(picks) {
-  return (picks || []).filter((p) => p !== 'Other').length;
-}
-
-/** Validates min/max/required for single, multiple, and media choice fields */
-function validateChoicePicks({ required, multipleSelect, minChoices, maxChoices, picks, optionCount }) {
-  const count = getChoicePickCount(picks);
-  if (!required && count === 0) return true;
-  const min = multipleSelect
-    ? Math.max(required ? 1 : 0, Number(minChoices) || (required ? 1 : 0))
-    : required ? 1 : 0;
-  const max = multipleSelect
-    ? (maxChoices == null ? optionCount + 1 : Number(maxChoices))
-    : 1;
-  if (count < min) return false;
-  if (count > max) return false;
-  return true;
-}
-
-const CHOICE_KEYBOARD_HINT = (i) => String.fromCharCode(65 + (i % 26));
-
-/** Renders description instruction copy with list/link formatting from the configure panel */
-function renderDescriptionContent(content, formatting, textAlignClass, contentStyle) {
-  const linkStyle = formatting.link ? { color: '#2563eb', textDecoration: 'underline' } : {};
-  const mergedStyle = { ...contentStyle, fontFamily: "'Geist', sans-serif", ...linkStyle };
-  const lines = String(content || '').split('\n').filter((line) => line.length > 0);
-
-  if (formatting.list) {
-    const items = lines.length > 0 ? lines : [content];
-    return (
-      <ul className={`list-disc pl-5 space-y-1 text-[#6b6860] leading-[23px] ${textAlignClass}`} style={mergedStyle}>
-        {items.map((line, i) => (
-          <li key={i}>{line}</li>
-        ))}
-      </ul>
-    );
-  }
-
-  return (
-    <p className={`text-[#6b6860] leading-[23px] ${textAlignClass}`} style={mergedStyle}>
-      {content}
-    </p>
-  );
-}
-
-/** Builder overlay when a field is marked hidden in configure */
-const HiddenFieldOverlay = ({ show }) =>
-  show ? (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] pointer-events-none"
-      style={{ background: 'rgba(255,255,255,0.55)' }}
-    >
-      <span
-        className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#888] px-3 py-1 rounded-full border border-[rgba(0,0,0,0.12)] bg-white/90"
-        style={{ fontFamily: "'DM Sans', sans-serif" }}
-      >
-        Hidden from respondents
-      </span>
-    </motion.div>
-  ) : null;
-
-/** Validates preview Continue when configured fields are marked required */
-function isPreviewAdvanceAllowed(snap) {
-  const g = (k) => String(snap.previewFields[k] ?? '').trim();
-  const { cardKey, shortTextDraft, longTextDraft, previewPicks = [], captchaChecked, ratingValue } = snap;
-  const realPicks = () => getChoicePickCount(previewPicks);
-
-  switch (cardKey) {
-    case 'buildingBlocks:CTA':
-      return true;
-    case 'buildingBlocks:Heading':
-      if (snap.headingConfig?.headingHidden) return true;
-      return !snap.headingConfig?.headingRequired || g('headingAns').length > 0;
-    case 'buildingBlocks:Description':
-      if (snap.descriptionConfig?.descriptionHidden) return true;
-      return true;
-    case 'buildingBlocks:Images':
-      if (snap.imageConfig?.imageHidden) return true;
-      return true;
-    case 'buildingBlocks:Video':
-      if (snap.videoConfig?.videoHidden) return true;
-      return !snap.videoConfig?.videoRequired || g('videoAns').length > 0;
-    case 'basicInfo:Contact': {
-      const cc = snap.contactConfig || {};
-      const br = !!cc.contactRequired;
-      const cf = cc.contactFields || {};
-      const need = (fld) => !!(fld?.visible !== false && (br || fld?.required === true));
-      if (need(cf.firstName) && !g('c.fn')) return false;
-      if (need(cf.lastName) && !g('c.ln')) return false;
-      if (need(cf.email) && !g('c.em')) return false;
-      if (need(cf.phone) && !g('c.ph')) return false;
-      if (need(cf.company) && !g('c.co')) return false;
-      return true;
-    }
-    case 'basicInfo:Address': {
-      const ac = snap.addressConfig || {};
-      const br = !!ac.addressRequired;
-      const af = ac.addressFields || {};
-      const need = (fld) => !!(fld?.visible !== false && (br || fld?.required === true));
-      if (need(af.street) && !g('a.st')) return false;
-      if (need(af.city) && !g('a.ci')) return false;
-      if (need(af.state) && !g('a.ste')) return false;
-      if (need(af.postal) && !g('a.po')) return false;
-      if (need(af.country) && !g('a.ct')) return false;
-      return true;
-    }
-    case 'basicInfo:Work Info': {
-      const wc = snap.workConfig || {};
-      const br = !!wc.workRequired;
-      const wf = wc.workFields || {};
-      const need = (fld) => !!(fld?.visible !== false && (br || fld?.required === true));
-      if (need(wf.company) && !g('w.co')) return false;
-      if (need(wf.title) && !g('w.ti')) return false;
-      if (need(wf.industry) && !g('w.ind')) return false;
-      if (need(wf.teamSize) && !g('w.ts')) return false;
-      return true;
-    }
-    case 'qualitative:Short text': {
-      const st = snap.shortTextConfig || {};
-      if (st.shortTextHidden) return true;
-      const val = String(shortTextDraft ?? '').trim();
-      if (st.shortTextRequired && !val) return false;
-      const min = Math.max(0, Number(st.shortTextMinChars) || 0);
-      if (val && min > 0 && val.length < min) return false;
-      if (val && !validateTextValue(val, st.shortTextValidation)) return false;
-      return true;
-    }
-    case 'qualitative:Long text': {
-      const lt = snap.longTextConfig || {};
-      if (lt.longTextHidden) return true;
-      const val = String(longTextDraft ?? '').trim();
-      if (lt.longTextRequired && !val) return false;
-      const min = Math.max(0, Number(lt.longTextMinChars) || 0);
-      if (val && min > 0 && val.length < min) return false;
-      if (val && !validateTextValue(val, lt.longTextValidation)) return false;
-      return true;
-    }
-    case 'choiceBased:Single': {
-      const sc = snap.singleConfig || {};
-      const opts = sc.singleOptions || [];
-      return validateChoicePicks({
-        required: !!sc.singleRequired,
-        multipleSelect: !!sc.singleMultipleSelect,
-        minChoices: sc.singleMinChoices,
-        maxChoices: sc.singleMaxChoices,
-        picks: previewPicks,
-        optionCount: opts.length,
-      });
-    }
-    case 'choiceBased:Multiple': {
-      const mc = snap.multipleConfig || {};
-      const opts = mc.multipleOptions || [];
-      return validateChoicePicks({
-        required: !!mc.multipleRequired,
-        multipleSelect: !!mc.multipleMultipleSelect,
-        minChoices: mc.multipleMinChoices,
-        maxChoices: mc.multipleMaxChoices,
-        picks: previewPicks,
-        optionCount: opts.length,
-      });
-    }
-    case 'choiceBased:Media': {
-      const me = snap.mediaConfig || {};
-      const opts = me.mediaOptions || [];
-      return validateChoicePicks({
-        required: !!me.mediaRequired,
-        multipleSelect: !!me.mediaAllowMultiple,
-        minChoices: me.mediaMinChoices,
-        maxChoices: me.mediaMaxChoices,
-        picks: previewPicks,
-        optionCount: opts.length,
-      });
-    }
-    case 'interactive:Maps': {
-      const mapc = snap.mapConfig || {};
-      if (!mapc.mapRequired) return true;
-      const sel = snap.mapSelection;
-      return !!(sel?.lat != null && sel?.lng != null && (sel?.address || '').trim());
-    }
-    case 'interactive:Captcha': {
-      const cap = snap.captchaConfig || {};
-      if (cap.captchaEnabled === false) return true;
-      return !!captchaChecked;
-    }
-    case 'numeric:Rating':
-      return !snap.ratingConfig?.ratingRequired || (ratingValue ?? 0) > 0;
-    case 'numeric:Time': {
-      const tc = snap.timeConfig || {};
-      const sel = snap.timeSelection;
-      if (!sel) return !tc.timeRequired;
-      const secs = selectionToSeconds({
-        hour: sel.hour,
-        minute: sel.minute,
-        second: sel.second ?? 0,
-        period: sel.period,
-        use12h: !!tc.timeUse12h,
-      });
-      return isTimeWithinBounds(secs, tc.timeMinTime, tc.timeMaxTime, {
-        showSeconds: !!tc.timeShowSeconds,
-      });
-    }
-    default:
-      return true;
-  }
-}
-
-const ContentCard = ({
-  block,
-  blockNum,
-  onDelete,
-  ctaConfig,
-  headingConfig,
-  descriptionConfig,
-  imageConfig,
-  imageFileInputRef,
-  videoConfig,
-  contactConfig,
-  addressConfig,
-  workConfig,
-  shortTextConfig,
-  longTextConfig,
-  responseQualityConfig,
-  shortTextResponseQualityConfig,
-  singleConfig,
-  multipleConfig,
-  mediaConfig,
-  mapConfig,
-  captchaConfig,
-  multiImageConfig,
-  uploadConfig,
-  ratingConfig,
-  dateConfig,
-  timeConfig,
-  fullCanvas = false,
-  cardColor = '#f7f6f4',
-  cardImage = null,
-  isPreviewMode = false,
-  onPreviewAdvance,
-  previewStepNav = null,
-  previewScreenValidatorRef,
-  onPreviewSnapChange,
-  previewScreenId,
-  isIntroScreen = false,
-}) => {
-  const { section, label } = block;
-  const cardKey = `${section}:${label}`;
-
-  const [captchaChecked, setCaptchaChecked] = useState(false);
-  const [ratingValue, setRatingValue] = useState(0);
-  const [ratingHover, setRatingHover] = useState(0);
-  const [shortTextDraft, setShortTextDraft] = useState('');
-  const [previewFields, setPreviewFields] = useState({});
-  const [previewPicks, setPreviewPicks] = useState([]);
-  const [longTextDraft, setLongTextDraft] = useState('');
-  const [previewRequiredHint, setPreviewRequiredHint] = useState(false);
-  const [mapSelection, setMapSelection] = useState(null);
-  const [timeSelection, setTimeSelection] = useState(null);
-
-  const shortTextMaxCap = shortTextConfig?.shortTextMaxChars ?? 100;
-  const shortTextCapRef = useRef(shortTextMaxCap);
-  if (shortTextCapRef.current !== shortTextMaxCap) {
-    shortTextCapRef.current = shortTextMaxCap;
-    setShortTextDraft((d) => (d.length > shortTextMaxCap ? d.slice(0, shortTextMaxCap) : d));
-  }
-
-  const pf = (key, def = '') => previewFields[key] ?? def;
-  const setPf = (key, val) => setPreviewFields((prev) => ({ ...prev, [key]: val }));
-
-  const togglePreviewPick = (optLabel, allowMultiple, maxChoices = null) => {
-    setPreviewPicks((prev) => {
-      if (allowMultiple) {
-        if (prev.includes(optLabel)) return prev.filter((x) => x !== optLabel);
-        const max = maxChoices == null ? Infinity : Number(maxChoices);
-        if (getChoicePickCount(prev) >= max) return prev;
-        return [...prev, optLabel];
-      }
-      return prev.includes(optLabel) ? [] : [optLabel];
-    });
-  };
-
-  const singleOptsKey = (singleConfig?.singleOptions || []).join('\x1e');
-  const singleDisplayOpts = useMemo(() => {
-    const sc = singleConfig || {};
-    const opts = sc.singleOptions || ['Social media', 'Search engine', 'Friend / colleague', 'Advertisement'];
-    const allowOther = sc.singleAllowOther ?? true;
-    const base = allowOther ? [...opts, 'Other'] : [...opts];
-    return sc.singleRandomize ? shuffleArray(base) : base;
-  }, [singleOptsKey, singleConfig?.singleAllowOther, singleConfig?.singleRandomize]);
-
-  const multipleOptsKey = (multipleConfig?.multipleOptions || []).join('\x1e');
-  const multipleDisplayOpts = useMemo(() => {
-    const mc = multipleConfig || {};
-    const opts = mc.multipleOptions || ['Dashboard', 'Reports', 'Integrations', 'Analytics'];
-    const allowOther = mc.multipleAllowOther ?? false;
-    const base = allowOther ? [...opts, 'Other'] : [...opts];
-    return mc.multipleRandomize ? shuffleArray(base) : base;
-  }, [multipleOptsKey, multipleConfig?.multipleAllowOther, multipleConfig?.multipleRandomize]);
-
-  const mediaOptsKey = (mediaConfig?.mediaOptions || []).map((o) => o?.label ?? '').join('\x1e');
-  const mediaDisplayOpts = useMemo(() => {
-    const opts = mediaConfig?.mediaOptions || [];
-    return mediaConfig?.mediaRandomiseOrder ? shuffleArray([...opts]) : opts;
-  }, [mediaOptsKey, mediaConfig?.mediaRandomiseOrder]);
-
-  const responseQualityEvaluation = useMemo(() => {
-    if (!isPreviewMode) return null;
-    if (cardKey === 'qualitative:Long text' && responseQualityConfig?.enabled) {
-      return evaluateResponseQuality(longTextDraft, responseQualityConfig);
-    }
-    if (cardKey === 'qualitative:Short text' && shortTextResponseQualityConfig?.enabled) {
-      return evaluateResponseQuality(shortTextDraft, shortTextResponseQualityConfig);
-    }
-    return null;
-  }, [
-    isPreviewMode,
-    cardKey,
-    responseQualityConfig,
-    shortTextResponseQualityConfig,
-    longTextDraft,
-    shortTextDraft,
-  ]);
-
-  const snapRef = useRef({});
-  snapRef.current = {
-    cardKey,
-    previewFields,
-    shortTextDraft,
-    longTextDraft,
-    previewPicks,
-    captchaChecked,
-    ratingValue,
-    headingConfig,
-    videoConfig,
-    contactConfig,
-    addressConfig,
-    workConfig,
-    shortTextConfig,
-    longTextConfig,
-    singleConfig,
-    multipleConfig,
-    mediaConfig,
-    mapConfig,
-    mapSelection,
-    captchaConfig,
-    ratingConfig,
-    dateConfig,
-    timeConfig,
-    timeSelection,
-  };
-
-  useEffect(() => {
-    setPreviewRequiredHint(false);
-  }, [previewFields, shortTextDraft, longTextDraft, previewPicks, captchaChecked, ratingValue]);
-
-  useEffect(() => {
-    if (!isPreviewMode || !onPreviewSnapChange || previewScreenId == null) return;
-    onPreviewSnapChange(previewScreenId, snapRef.current);
-  }, [
-    isPreviewMode,
-    onPreviewSnapChange,
-    previewScreenId,
-    previewFields,
-    shortTextDraft,
-    longTextDraft,
-    previewPicks,
-    captchaChecked,
-    ratingValue,
-    mapSelection,
-    timeSelection,
-  ]);
-
-  useEffect(() => {
-    if (!previewScreenValidatorRef) return undefined;
-
-    if (!isPreviewMode) {
-      previewScreenValidatorRef.current = null;
-      return undefined;
-    }
-
-    previewScreenValidatorRef.current = null;
-    if (cardKey === 'interactive:Multi-image upload') {
-      return () => {
-        previewScreenValidatorRef.current = null;
-      };
-    }
-
-    previewScreenValidatorRef.current = () => {
-      const ok = isPreviewAdvanceAllowed(snapRef.current);
-      setPreviewRequiredHint(!ok);
-      return ok;
-    };
-    return () => {
-      previewScreenValidatorRef.current = null;
-    };
-  }, [isPreviewMode, cardKey, previewScreenValidatorRef]);
-
-  let content;
-
-  if (cardKey === 'buildingBlocks:CTA') {
-    const cc = ctaConfig || {};
-    const btnLabel     = cc.ctaButtonLabel  ?? 'Get started';
-    const btnSize      = cc.ctaButtonSize   ?? 'M';
-    const btnStyle     = cc.ctaButtonStyle  ?? 'Filled';
-    const btnRadius    = cc.ctaCornerRadius ?? 10;
-    const showIcon     = cc.ctaShowIcon     ?? true;
-    const headingSize  = cc.ctaHeadingSize  ?? 32;
-    const bodySize     = cc.ctaBodySize     ?? 15;
-    const fontWeight   = cc.ctaFontWeight   ?? 'Regular';
-    const textAlign    = cc.ctaTextAlign    ?? 'center';
-    const padding      = cc.ctaPadding      ?? 44;
-    const mainHeading  = cc.ctaHeadingText ?? 'Welcome to our survey';
-    const helperText   = cc.ctaHelperText  ?? 'Please fill out this form to help us improve. It only takes a couple of minutes and your feedback matters.';
-    const durationText = cc.ctaDurationText ?? 'Takes ~3 minutes';
-    const isEditingCta = cc.isEditingCard || false;
-
-    const btnSizePxMap  = { S: { px: '14px', py: '8px', text: '14px' }, M: { px: '28px', py: '12px', text: '15px' }, L: { px: '36px', py: '14px', text: '16px' }, XL: { px: '44px', py: '16px', text: '18px' } };
-    const { px: bPx, py: bPy, text: bText } = btnSizePxMap[btnSize] || btnSizePxMap['M'];
-    const fontWeightMap = { Light: '300', Regular: '500', Bold: '700' };
-    const textAlignClass = textAlign === 'center' ? 'text-center' : textAlign === 'right' ? 'text-right' : 'text-left';
-
-    const isFilled  = btnStyle === 'Filled';
-    const isOutline = btnStyle === 'Outline';
-    const isGhost   = btnStyle === 'Ghost';
-    const accent    = cc.ctaBtnColor ?? '#111';
-    const btnBg     = isFilled ? accent : 'transparent';
-    const btnColor  = cc.ctaTextColor
-      ?? (cc.ctaLabelColor === 'black' ? '#111' : '#fff');
-    const btnBorder = isOutline || isGhost ? `1.5px solid ${accent}` : 'none';
-    const effectiveBtnColor = isGhost ? accent : btnColor;
-    const contentMaxWidth = CTA_CONTENT_WIDTH_MAP[cc.ctaContentWidth] || CTA_CONTENT_WIDTH_MAP.Default;
-
-    content = (
-      <>
-        <div
-          className={`flex-1 flex flex-col items-center justify-center gap-[9px] px-14 ${textAlignClass}`}
-          style={{ paddingTop: padding, paddingBottom: padding }}
-        >
-          <div className="bg-[#111] w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0">
-            <BoxesIcon size={18} className="text-white" />
-          </div>
-          <div className="pt-[11px] w-full mx-auto" style={{ maxWidth: contentMaxWidth }}>
-            {isEditingCta ? (
-              <input
-                type="text"
-                value={cc.ctaHeadingText ?? ''}
-                onChange={(e) => cc.setCtaHeadingText?.(e.target.value)}
-                className={`text-[#111] tracking-[-0.56px] leading-[1.3] bg-transparent border-b border-[#c8c6c0] outline-none w-full focus:border-[#111] transition-colors pb-1 ${textAlignClass}`}
-                style={{ fontSize: headingSize, fontWeight: fontWeightMap[fontWeight] }}
-                placeholder="Welcome to our survey"
-              />
-            ) : (
-              <p
-                className={`text-[#111] tracking-[-0.56px] leading-[1.3] ${textAlignClass}`}
-                style={{ fontSize: headingSize, fontWeight: fontWeightMap[fontWeight] }}
-              >
-                {mainHeading}
-              </p>
-            )}
-          </div>
-          <div className={`w-full mx-auto ${textAlignClass}`} style={{ maxWidth: contentMaxWidth }}>
-            {isEditingCta ? (
-              <textarea
-                value={cc.ctaHelperText ?? ''}
-                onChange={(e) => cc.setCtaHelperText?.(e.target.value)}
-                rows={3}
-                className={`text-[#888] font-light leading-[1.6] bg-transparent border-b border-[#c8c6c0] outline-none w-full resize-none focus:border-[#111] transition-colors pb-1 ${textAlignClass}`}
-                style={{ fontSize: bodySize }}
-                placeholder="Please fill out this form to help us improve…"
-              />
-            ) : (
-              <p className={`text-[#888] font-light leading-[1.6] ${textAlignClass}`} style={{ fontSize: bodySize }}>
-                {helperText}
-              </p>
-            )}
-          </div>
-          {isPreviewMode ? (
-            <button
-              type="button"
-              onClick={() => onPreviewAdvance?.()}
-              className="flex gap-[7px] items-center justify-center mt-2 cursor-pointer"
-              style={{
-                background: btnBg,
-                color: effectiveBtnColor,
-                border: btnBorder,
-                borderRadius: `${btnRadius}px`,
-                paddingLeft: bPx,
-                paddingRight: bPx,
-                paddingTop: bPy,
-                paddingBottom: bPy,
-              }}
-            >
-              <span style={{ fontSize: bText, fontWeight: '500' }}>{btnLabel}</span>
-              {showIcon && <RiArrowRightLine size={12} style={{ color: effectiveBtnColor }} />}
-            </button>
-          ) : (
-            <div
-              className="flex gap-[7px] items-center mt-2"
-              style={{
-                background: btnBg,
-                color: effectiveBtnColor,
-                border: btnBorder,
-                borderRadius: `${btnRadius}px`,
-                paddingLeft: bPx,
-                paddingRight: bPx,
-                paddingTop: bPy,
-                paddingBottom: bPy,
-              }}
-            >
-              <span style={{ fontSize: bText, fontWeight: '500' }}>{btnLabel}</span>
-              {showIcon && <RiArrowRightLine size={12} style={{ color: effectiveBtnColor }} />}
-            </div>
-          )}
-          <div className="flex gap-[5px] items-center justify-center pt-[5px]">
-            <RiTimeLine size={12} className="text-black shrink-0" />
-            {isEditingCta ? (
-              <input
-                type="text"
-                value={cc.ctaDurationText ?? ''}
-                onChange={(e) => cc.setCtaDurationText?.(e.target.value)}
-                className="text-[12px] text-black bg-transparent border-b border-[#c8c6c0] outline-none focus:border-[#111] transition-colors pb-0.5 min-w-[120px] text-center"
-                placeholder="Takes ~3 minutes"
-              />
-            ) : (
-              <span className="text-[12px] text-black">{durationText}</span>
-            )}
-          </div>
-        </div>
-        {!isPreviewMode && (
-        <div className="border-t border-[rgba(0,0,0,0.1)] flex items-center gap-2 px-14 py-[19px]">
-          {!isEditingCta && (
-            <button
-              onClick={cc.onEditToggle}
-              className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-            >
-              <RiPencilLine size={12} className="shrink-0" />
-              Edit content
-            </button>
-          )}
-          {!isIntroScreen && isEditingCta && (
-            <button
-              onClick={cc.onEditToggle}
-              className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-            >
-              <RiArrowLeftLine size={12} className="shrink-0" aria-hidden />
-              Back
-            </button>
-          )}
-          <button
-            onClick={onDelete}
-            className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-[rgba(255,245,245,0.7)] border border-[rgba(200,50,50,0.2)] text-[#d63030] text-[12px] cursor-pointer hover:bg-[rgba(255,235,235,0.9)] transition-colors whitespace-nowrap"
-          >
-            <RiDeleteBin6Line size={12} className="shrink-0" />
-            Delete
-          </button>
-          <div className="flex-1" />
-          {(isIntroScreen ? isEditingCta : true) && (
-            <button
-              type="button"
-              className="flex items-center gap-[5px] px-[16px] py-[8px] rounded-[8px] bg-[#111] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap"
-              onClick={isEditingCta ? cc.onEditToggle : undefined}
-            >
-              <RiCheckLine size={11} className="shrink-0" />
-              Save
-            </button>
-          )}
-        </div>
-        )}
-      </>
-    );
-  } else if (cardKey === 'buildingBlocks:Heading') {
-    const hc = headingConfig || {};
-    const hText = hc.headingText || 'Tell us about yourself';
-    const hLevel = hc.headingLevel || 'H2';
-    const hSize = hc.headingTextSize || 'M';
-    const hAlign = hc.headingAlignment || 'left';
-    const hHidden = !!hc.headingHidden;
-    const hRequired = !!hc.headingRequired;
-    const isEditingHeading = hc.isEditingCard || false;
-    const textAlignClass = hAlign === 'center' ? 'text-center' : hAlign === 'right' ? 'text-right' : 'text-left';
-    // Heading level controls the heading title size
-    const headingLevelSizeMap = { H1: '40px', H2: '32px', H3: '26px', H4: '20px' };
-    const headingLevelWeightMap = { H1: '700', H2: '600', H3: '600', H4: '500' };
-    const hTitleWeight = HEADING_FONT_WEIGHT_MAP[hc.headingFontWeight] ?? headingLevelWeightMap[hLevel];
-    // Text size controls the answer textarea font size
-    const answerTextSizeMap = { S: '15px', M: '17px', L: '20px', XL: '24px' };
-    content = (
-      <>
-        <div className={`relative flex-1 flex flex-col px-14 pt-11 pb-5 gap-3 ${hHidden && !isPreviewMode ? 'opacity-40' : ''} ${hHidden && isPreviewMode ? 'hidden' : ''}`}>
-          <HiddenFieldOverlay show={hHidden && !isPreviewMode} />
-          {/* Badge label — driven by Sub-heading field in Configure panel */}
-          <p className={`text-[#888] text-[15px] tracking-[0.42px] uppercase ${textAlignClass}`}>
-            {hc.subHeading || 'SECTION HEADING'}
-          </p>
-
-          {/* Heading title — size driven by Heading Level; editable in edit mode */}
-          {isPreviewMode ? (
-            <div
-              className={`flex flex-wrap items-center gap-x-3 gap-y-1 w-full ${
-                hAlign === 'center' ? 'justify-center' : 'justify-between'
-              }`}
-            >
-              <p
-                className={`text-[#111] tracking-[-0.52px] leading-[1.3] ${hAlign === 'center' ? '' : 'flex-1'} min-w-0 ${textAlignClass}`}
-                style={{ fontSize: headingLevelSizeMap[hLevel], fontWeight: hTitleWeight }}
-              >
-                {hText}
-                {hRequired && <span className="text-red-600 ml-1">*</span>}
-              </p>
-              <PreviewRequiredInline show={previewRequiredHint} />
-            </div>
-          ) : isEditingHeading ? (
-            <input
-              type="text"
-              value={hc.headingText || ''}
-              onChange={(e) => hc.setHeadingText?.(e.target.value)}
-              className={`text-[#111] tracking-[-0.52px] leading-[1.3] bg-transparent border-b border-[#c8c6c0] outline-none w-full focus:border-[#111] transition-colors pb-1 ${textAlignClass}`}
-              style={{ fontSize: headingLevelSizeMap[hLevel], fontWeight: hTitleWeight }}
-              placeholder="Tell us about yourself"
-            />
-          ) : (
-            <p
-              className={`text-[#111] tracking-[-0.52px] leading-[1.3] ${textAlignClass}`}
-              style={{ fontSize: headingLevelSizeMap[hLevel], fontWeight: hTitleWeight }}
-            >
-              {hText}
-              {hRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-          )}
-
-          {/* Answer area — size driven by Text Size; pinned to bottom, grows upward as content fills */}
-          <div className={`flex-1 flex flex-col justify-end pb-2 pt-4 ${hHidden && isPreviewMode ? 'hidden' : ''}`}>
-            {isPreviewMode ? (
-              <textarea
-                value={pf('headingAns')}
-                onChange={(e) => setPf('headingAns', e.target.value)}
-                rows={1}
-                className={`text-[#333] font-light leading-[1.6] bg-transparent border-b border-[#111] outline-none w-full resize-none transition-colors pb-[11px] pt-[10px] ${textAlignClass}`}
-                style={{ fontFamily: "'DM Sans', sans-serif", overflow: 'hidden', fontSize: answerTextSizeMap[hSize] }}
-                placeholder="Type your answer here…"
-                onInput={(e) => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
-              />
-            ) : isEditingHeading ? (
-              <textarea
-                value={hc.headingAnswerText || ''}
-                onChange={(e) => hc.setHeadingAnswerText?.(e.target.value)}
-                rows={1}
-                className={`text-[#555] font-light leading-[1.6] bg-transparent border-b border-[#111] outline-none w-full resize-none transition-colors pb-[11px] pt-[10px] ${textAlignClass}`}
-                style={{ fontFamily: "'DM Sans', sans-serif", overflow: 'hidden', fontSize: answerTextSizeMap[hSize] }}
-                placeholder="Type your answer here…"
-                onInput={(e) => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
-              />
-            ) : (
-              <div className="border-b border-[#111] pb-[11px] pt-[10px]">
-                <p
-                  className={`font-light ${hc.headingAnswerText ? 'text-[#333]' : 'text-[#aaa]'}`}
-                  style={{ fontFamily: "'DM Sans', sans-serif", fontSize: answerTextSizeMap[hSize] }}
-                >
-                  {hc.headingAnswerText || 'Type your answer here…'}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-        {!isPreviewMode && (
-        <div className="border-t border-[rgba(0,0,0,0.1)] flex items-center gap-2 px-14 py-[19px]">
-          {!isEditingHeading && (
-            <button
-              onClick={hc.onEditToggle}
-              className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-            >
-              <RiPencilLine size={12} className="shrink-0" />
-              Edit content
-            </button>
-          )}
-          {!isIntroScreen && isEditingHeading && (
-            <button
-              onClick={hc.onEditToggle}
-              className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-            >
-              <RiArrowLeftLine size={12} className="shrink-0" aria-hidden />
-              Back
-            </button>
-          )}
-          <button
-            onClick={onDelete}
-            className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-[rgba(255,245,245,0.7)] border border-[rgba(200,50,50,0.2)] text-[#d63030] text-[12px] cursor-pointer hover:bg-[rgba(255,235,235,0.9)] transition-colors whitespace-nowrap"
-          >
-            <RiDeleteBin6Line size={12} className="shrink-0" />
-            Delete
-          </button>
-          <div className="flex-1" />
-          {(isIntroScreen ? isEditingHeading : true) && (
-            <button
-              type="button"
-              className="flex items-center gap-[5px] px-[16px] py-[8px] rounded-[8px] bg-[#111] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap"
-              onClick={isEditingHeading ? hc.onEditToggle : undefined}
-            >
-              <RiCheckLine size={11} className="shrink-0" />
-              Save
-            </button>
-          )}
-        </div>
-        )}
-      </>
-    );
-  } else if (cardKey === 'buildingBlocks:Description') {
-    const dc = descriptionConfig || {};
-    const dcContent = dc.descriptionContent || 'This field is required only if you are currently employed full time. If not, you can skip ahead to the next section.';
-    const dcSize = dc.descriptionTextSize || 'M';
-    const dcAlign = dc.descriptionAlignment || 'left';
-    const dcFormatting = dc.descriptionFormatting || {};
-    const dcHidden = !!dc.descriptionHidden;
-    const dcShowCharCount = dc.descriptionShowCharCount || false;
-    const dcCharLimit = dc.descriptionCharLimit || '';
-    const fontSizeMap = { S: '16px', M: '18px', L: '20px' };
-    const textAlignClass = dcAlign === 'center' ? 'text-center' : dcAlign === 'right' ? 'text-right' : 'text-left';
-    const contentStyle = {
-      fontSize: fontSizeMap[dcSize],
-      fontWeight: dcFormatting.bold ? '600' : '400',
-      fontStyle: dcFormatting.italic ? 'italic' : 'normal',
-      textDecoration: dcFormatting.underline ? 'underline' : 'none',
-    };
-    content = (
-      <div className={`relative flex-1 flex flex-col ${dcHidden && !isPreviewMode ? 'opacity-40' : ''} ${dcHidden && isPreviewMode ? 'hidden' : ''}`}>
-        <HiddenFieldOverlay show={dcHidden && !isPreviewMode} />
-        <div className="flex-1 flex flex-col px-[28px] pt-[32px] pb-[20px] gap-[8px]">
-          {/* Block type label */}
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 w-full">
-            <span
-              className="text-[13px] font-semibold tracking-[1.4px] uppercase text-black"
-              style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-            >
-              Description
-            </span>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {/* Instruction sub-label */}
-          <div className="pt-[2px]">
-            <span
-              className="text-[#6b6860] text-[12px] font-semibold tracking-[0.66px] uppercase"
-              style={{ fontFamily: "'Geist', sans-serif" }}
-            >
-              INSTRUCTION
-            </span>
-          </div>
-          {/* Description content in vertical border */}
-          <div className="border-l-2 border-[#e4e2dc] pl-[14px] py-[2px]">
-            {renderDescriptionContent(dcContent, dcFormatting, textAlignClass, contentStyle)}
-          </div>
-        </div>
-        {/* Input area + gray line just above footer */}
-        <div className={`px-[28px] pt-[4px] pb-[0px] ${dcHidden && isPreviewMode ? 'hidden' : ''}`}>
-          <div className="border-b border-[#111] pb-[11px]">
-            {isPreviewMode ? (
-              <textarea
-                value={pf('descAns')}
-                onChange={(e) => setPf('descAns', dcCharLimit ? e.target.value.slice(0, Number(dcCharLimit) || 5000) : e.target.value)}
-                rows={2}
-                placeholder="Type your answer here…"
-                className={`w-full text-black text-[17px] font-light bg-transparent outline-none border-0 resize-none placeholder:text-[#bbb] ${textAlignClass}`}
-                style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-              />
-            ) : (
-              <p
-                className={`text-black text-[17px] font-light ${textAlignClass}`}
-                style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-              >
-                Type your answer here…
-              </p>
-            )}
-          </div>
-          {dcShowCharCount && (
-            <div className="flex justify-end mt-[4px]">
-              <span className="text-[#bbb] text-[11px]">
-                {(isPreviewMode ? pf('descAns').length : 0)}{dcCharLimit ? ` / ${dcCharLimit}` : ''}
-              </span>
-            </div>
-          )}
-          <div className="h-px bg-[#e4e2dc] mt-[14px]" />
-        </div>
-        {/* Footer */}
-        {!isPreviewMode && (
-        <div className="flex items-center justify-between px-[28px] py-[16px]">
-          <div className="flex gap-2">
-            <button
-              onClick={onDelete}
-              className="flex items-center gap-[6px] px-[14px] py-[8px] rounded-[8px] bg-[#fef2f2] border border-[#fecaca] text-[#dc2626] text-[12px] cursor-pointer hover:bg-[#fee2e2] transition-colors whitespace-nowrap"
-              style={{ fontFamily: "'Geist', sans-serif" }}
-            >
-              <RiDeleteBin6Line size={12} className="shrink-0" />
-              Delete
-            </button>
-            <button
-              className="flex items-center gap-[6px] px-[14px] py-[8px] rounded-[8px] bg-white border border-[#e4e2dc] text-[#1a1a1a] text-[12px] cursor-pointer hover:bg-[#f4f3ef] transition-colors whitespace-nowrap"
-              style={{ fontFamily: "'Geist', sans-serif" }}
-            >
-              <RiPencilLine size={12} className="shrink-0" />
-              Edit
-            </button>
-          </div>
-          <button
-            className="flex items-center gap-[6px] px-[16px] py-[8px] rounded-[8px] bg-[#1a1a1a] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap"
-            style={{ fontFamily: "'Geist', sans-serif" }}
-          >
-            <RiCheckLine size={11} className="shrink-0" />
-            Save
-          </button>
-        </div>
-        )}
-      </div>
-    );
-  } else if (cardKey === 'buildingBlocks:Images') {
-    const ic = imageConfig || {};
-    const imgPreview = ic.imagePreview || null;
-    const imgAltText = ic.imageAltText || '';
-    const imgCaption = ic.imageCaption || '';
-    const imgAlignment = ic.imageAlignment || 'left';
-    const imgWidth = ic.imageWidth || 'Full';
-    const imgCornerRadius = ic.imageCornerRadius ?? 8;
-    const imgQuestion = ic.imageQuestion || 'What do you see in this image?';
-    const imgDescription = ic.imageDescription || "Describe what's happening in the photo above.";
-    const imgLinkOnClick = ic.imageLinkOnClick || false;
-    const imgLinkUrl = ic.imageLinkUrl || '';
-    const imgOpenInNewTab = ic.imageOpenInNewTab || false;
-    const imgAnswerText = ic.imageAnswerText || '';
-    const imgHidden = !!ic.imageHidden;
-
-    const alignClass = imgAlignment === 'center' ? 'items-center' : imgAlignment === 'right' ? 'items-end' : 'items-start';
-    const imgWidthStyle = imgWidth === 'Fit' ? { width: 'auto', maxWidth: '100%' } : imgWidth === 'Custom' ? { width: '60%' } : { width: '100%' };
-
-    const imageArea = imgPreview ? (
-      <div
-        className="relative overflow-hidden"
-        style={{ borderRadius: imgCornerRadius, ...imgWidthStyle }}
-      >
-        {imgLinkOnClick && imgLinkUrl ? (
-          <a href={imgLinkUrl} target={imgOpenInNewTab ? '_blank' : '_self'} rel="noreferrer">
-            <img
-              src={imgPreview}
-              alt={imgAltText || 'Uploaded image'}
-              className="w-full object-cover"
-              style={{ borderRadius: imgCornerRadius }}
-            />
-          </a>
-        ) : (
-          <img
-            src={imgPreview}
-            alt={imgAltText || 'Uploaded image'}
-            className="w-full object-cover"
-            style={{ borderRadius: imgCornerRadius }}
-          />
-        )}
-        {/* Replace / Remove overlay buttons */}
-        {!isPreviewMode && (
-        <div className="absolute top-[10px] right-[10px] flex gap-[6px]">
-          <button
-            onClick={() => imageFileInputRef && imageFileInputRef.current && imageFileInputRef.current.click()}
-            className="flex gap-[5px] items-center px-[11px] py-[6px] rounded-[20px] bg-white/88 border border-[rgba(0,0,0,0.1)] text-[#444] text-[11px] font-medium backdrop-blur-sm cursor-pointer hover:bg-white transition-colors"
-            style={{ background: 'rgba(255,255,255,0.88)' }}
-          >
-            <RiPencilLine size={11} className="shrink-0" />
-            Replace
-          </button>
-          <button
-            onClick={() => ic.onRemoveImage && ic.onRemoveImage()}
-            className="flex gap-[5px] items-center px-[11px] py-[6px] rounded-[20px] border border-[rgba(0,0,0,0.1)] text-[#d63030] text-[11px] font-medium backdrop-blur-sm cursor-pointer hover:bg-red-50 transition-colors"
-            style={{ background: 'rgba(255,255,255,0.88)' }}
-          >
-            <RiDeleteBin6Line size={11} className="shrink-0" />
-            Remove
-          </button>
-        </div>
-        )}
-        {/* File info bar */}
-        <div className="bg-[rgba(0,0,0,0.03)] border-t border-[rgba(0,0,0,0.1)] px-[12px] py-[8px]">
-          <p className="text-[11px] text-black font-light">
-            {imgCaption || 'image.jpg · uploaded'}
-          </p>
-        </div>
-      </div>
-    ) : isPreviewMode ? (
-      <div
-        className={`bg-[#eceae6] overflow-hidden`}
-        style={{ borderRadius: imgCornerRadius, ...imgWidthStyle }}
-      >
-        <div className="flex flex-col items-center justify-center py-[90px] gap-[10px]">
-          <ImagesCardIcon size={32} className="text-[#aaa]" />
-          <p className="text-[12px] text-black font-light">No image (builder preview)</p>
-        </div>
-        <div className="bg-[rgba(0,0,0,0.03)] border-t border-[rgba(0,0,0,0.1)] px-[12px] py-[8px]">
-          <p className="text-[11px] text-black font-light">The author will add an image here</p>
-        </div>
-      </div>
-    ) : (
-      <button
-        onClick={() => imageFileInputRef && imageFileInputRef.current && imageFileInputRef.current.click()}
-        className={`bg-[#eceae6] overflow-hidden cursor-pointer hover:bg-[#e4e2de] transition-colors`}
-        style={{ borderRadius: imgCornerRadius, ...imgWidthStyle }}
-      >
-        <div className="flex flex-col items-center justify-center py-[90px] gap-[10px]">
-          <ImagesCardIcon size={32} className="text-[#aaa]" />
-          <p className="text-[12px] text-black font-light">Image preview</p>
-        </div>
-        <div className="bg-[rgba(0,0,0,0.03)] border-t border-[rgba(0,0,0,0.1)] px-[12px] py-[8px]">
-          <p className="text-[11px] text-black font-light">Click to upload an image</p>
-        </div>
-      </button>
-    );
-
-    content = (
-      <div
-        className={`relative flex flex-col shrink-0 px-14 pt-11 pb-5 ${imgHidden && !isPreviewMode ? 'opacity-40' : ''} ${imgHidden && isPreviewMode ? 'hidden' : ''}`}
-      >
-        <HiddenFieldOverlay show={imgHidden && !isPreviewMode} />
-        <SectionBadge num={blockNum} label="Short text + Image" />
-        <div className={`flex flex-col pt-[10px] ${alignClass}`}>
-          {imageArea}
-        </div>
-        <div className="pt-[15px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-            {imgQuestion}
-          </p>
-          <PreviewRequiredInline show={previewRequiredHint} />
-        </div>
-        <p className="text-[#888] text-[15px] font-light mt-[1px] mb-[19.8px] leading-[20.8px]">{imgDescription}</p>
-        <div className="border-b border-[rgba(0,0,0,0.16)] pb-[11px] pt-[10px]">
-          {isPreviewMode ? (
-            <textarea
-              value={pf('imgAns')}
-              onChange={(e) => setPf('imgAns', e.target.value.slice(0, 200))}
-              rows={2}
-              placeholder="Type your answer here…"
-              className="w-full text-black text-[15px] font-light bg-transparent outline-none border-0 resize-none placeholder:text-[#aaa]"
-            />
-          ) : (
-            <p className="text-black text-[15px] font-light">{imgAnswerText || 'Type your answer here…'}</p>
-          )}
-        </div>
-        <div className="flex items-center justify-between pt-[4px] pb-[18px]">
-          <span className="text-[11px] text-black font-light">Press Enter ↵ to continue</span>
-          <span className="text-[11px] text-black">{isPreviewMode ? `${pf('imgAns').length}` : '0'} / 200</span>
-        </div>
-        {!isPreviewMode && (
-        <div className="border-t border-[rgba(0,0,0,0.1)] flex gap-[7px] items-center pt-[19px]">
-          <button
-            onClick={() => imageFileInputRef && imageFileInputRef.current && imageFileInputRef.current.click()}
-            className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-          >
-            <ImagesCardIcon size={12} className="shrink-0" />
-            Change image
-          </button>
-          <button
-            onClick={onDelete}
-            className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-[rgba(255,245,245,0.7)] border border-[rgba(200,50,50,0.2)] text-[#d63030] text-[12px] cursor-pointer hover:bg-[rgba(255,235,235,0.9)] transition-colors whitespace-nowrap"
-          >
-            <RiDeleteBin6Line size={12} className="shrink-0" />
-            Delete
-          </button>
-          <div className="flex-1" />
-          <button className="flex items-center gap-[5px] px-[16px] py-[8px] rounded-[8px] bg-[#111] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap">
-            <RiCheckLine size={11} className="shrink-0" />
-            Save
-          </button>
-        </div>
-        )}
-      </div>
-    );
-  } else if (cardKey === 'buildingBlocks:Video') {
-    const vc = videoConfig || {};
-    const vUrl = vc.videoUrl || '';
-    const vQuestion = vc.videoQuestion || 'After watching the video, what are your thoughts?';
-    const vDescription = vc.videoDescription || 'Share your honest feedback about the product demo.';
-    const vCaption = vc.videoCaption || '';
-    const vCornerRadius = vc.videoCornerRadius ?? 8;
-    const vHidden = !!vc.videoHidden;
-    const vRequired = !!vc.videoRequired;
-    const vSource = vc.videoSource || 'youtube';
-    const vWidth = vc.videoWidth || 'Full';
-    const vAspectRatio = vc.videoAspectRatio || '16:9';
-    const vAutoplay = !!vc.videoAutoplay;
-    const vLoop = !!vc.videoLoop;
-    const vShowControls = vc.videoShowControls !== false;
-    const sourceLabel = vSource === 'vimeo' ? 'Vimeo' : 'YouTube';
-    const videoWidthStyle = VIDEO_WIDTH_STYLES[vWidth] || VIDEO_WIDTH_STYLES.Full;
-    const aspectRatioCss = VIDEO_ASPECT_RATIO_MAP[vAspectRatio] || VIDEO_ASPECT_RATIO_MAP['16:9'];
-    const parsedVideo = parseVideoEmbed(vUrl, vSource);
-    const embedUrl = buildVideoEmbedUrl(parsedVideo, {
-      autoplay: vAutoplay,
-      loop: vLoop,
-      showControls: vShowControls,
-    });
-    const hasUrl = !!vUrl.trim();
-    const urlMismatch = hasUrl && !parsedVideo;
-    content = (
-      <>
-        <div
-          className={`relative flex flex-col shrink-0 px-14 pt-11 pb-5 ${vHidden && !isPreviewMode ? 'opacity-40' : ''} ${vHidden && isPreviewMode ? 'hidden' : ''}`}
-        >
-          <HiddenFieldOverlay show={vHidden && !isPreviewMode} />
-          <SectionBadge num={blockNum} label="Video with question" />
-          <div className="pt-[10px] mb-4" style={videoWidthStyle}>
-            <div className="overflow-hidden" style={{ borderRadius: vCornerRadius, border: '1px solid rgba(0,0,0,0.1)' }}>
-              {embedUrl ? (
-                <>
-                  <iframe
-                    src={embedUrl}
-                    className="w-full"
-                    style={{ aspectRatio: aspectRatioCss, display: 'block' }}
-                    frameBorder="0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen
-                    title={vCaption || vQuestion}
-                  />
-                  <div className="bg-[rgba(0,0,0,0.02)] border-t border-[rgba(0,0,0,0.07)] px-3 py-[7px] flex items-center justify-between gap-2">
-                    <p className="text-[11px] text-[#888]">{vCaption || 'Video'}</p>
-                    {(vAutoplay || vLoop || !vShowControls) && (
-                      <span className="text-[10px] text-[#aaa] shrink-0">
-                        {[vAutoplay && 'Autoplay', vLoop && 'Loop', !vShowControls && 'No controls'].filter(Boolean).join(' · ')}
-                      </span>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="bg-[#eceae6] flex flex-col items-center justify-center py-16 gap-3 px-6">
-                    <VideoCardIcon size={28} className="text-[#aaa]" />
-                    <p className="text-[#888] text-[15px] text-center">
-                      {urlMismatch
-                        ? `URL doesn't match ${sourceLabel} — check Video Source`
-                        : `Paste a ${sourceLabel} URL`}
-                    </p>
-                  </div>
-                  <div className="bg-[rgba(0,0,0,0.02)] border-t border-[rgba(0,0,0,0.07)] px-3 py-[7px]">
-                    <p className="text-[11px] text-[#888]">{vCaption || 'Click to configure video'}</p>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="pt-[4px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {vQuestion}
-              {vRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          <p className="text-[#888] text-[15px] font-light mt-[1px] mb-[15px]">{vDescription}</p>
-          <div className="border border-[rgba(0,0,0,0.1)] rounded-[8px] px-4 py-3 min-h-[80px] mb-3">
-            {isPreviewMode ? (
-              <textarea
-                value={pf('videoAns')}
-                onChange={(e) => setPf('videoAns', e.target.value.slice(0, 500))}
-                placeholder="Type your answer here…"
-                className="w-full min-h-[72px] text-[14px] font-light text-[#111] bg-transparent outline-none border-0 resize-y placeholder:text-[#bbb]"
-              />
-            ) : (
-              <p className="text-[#bbb] text-[14px] font-light">Type your answer here…</p>
-            )}
-          </div>
-          <div className="flex justify-between items-center pb-[14px]">
-            <span className="text-[11px] text-[#bbb]">Press Enter ↵ to continue</span>
-            <span className="text-[11px] text-[#bbb]">{isPreviewMode ? pf('videoAns').length : 0} / 500</span>
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'basicInfo:Contact') {
-    const cc = contactConfig || {};
-    const cQuestion = cc.contactQuestion || 'How can we get in touch?';
-    const cHelperText = cc.contactHelperText || "We'll only reach out if we have a follow-up question.";
-    const cBlockRequired = !!cc.contactRequired;
-    const cFields = cc.contactFields || { firstName: { visible: true }, lastName: { visible: true }, email: { visible: true }, phone: { visible: true }, company: { visible: false } };
-    const cReq = (fld) => isCompositeFieldRequired(cBlockRequired, fld);
-    const cLabel = (name, fld) => `${name}${cReq(fld) ? ' *' : ''}`;
-    const showFirst = cFields.firstName?.visible !== false;
-    const showLast = cFields.lastName?.visible !== false;
-    const showEmail = cFields.email?.visible !== false;
-    const showPhone = cFields.phone?.visible !== false;
-    const showCompany = cFields.company?.visible !== false;
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label="Contact" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {cQuestion}
-              {cBlockRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {cHelperText && (
-            <p className="text-[#888] text-[15px] font-light mt-[1px] mb-[19px]">{cHelperText}</p>
-          )}
-          {(showFirst || showLast) && (
-            <div className="grid grid-cols-2 gap-4">
-              {showFirst && (isPreviewMode ? (
-                <PreviewLabeledInput
-                  label={cLabel('FIRST NAME', cFields.firstName)}
-                  value={pf('c.fn')}
-                  onChange={(v) => setPf('c.fn', v)}
-                  placeholder=""
-                />
-              ) : (
-                <FormField label={cLabel('FIRST NAME', cFields.firstName)} value="Jane" />
-              ))}
-              {showLast && (isPreviewMode ? (
-                <PreviewLabeledInput
-                  label={cLabel('LAST NAME', cFields.lastName)}
-                  value={pf('c.ln')}
-                  onChange={(v) => setPf('c.ln', v)}
-                  placeholder=""
-                />
-              ) : (
-                <FormField label={cLabel('LAST NAME', cFields.lastName)} value="Smith" />
-              ))}
-            </div>
-          )}
-          {showEmail && (
-            <div className="mt-[9px]">
-              {isPreviewMode ? (
-                <PreviewLabeledInput
-                  label={cLabel('EMAIL ADDRESS', cFields.email)}
-                  value={pf('c.em')}
-                  onChange={(v) => setPf('c.em', v)}
-                  placeholder="you@example.com"
-                  type="email"
-                />
-              ) : (
-                <FormField label={cLabel('EMAIL ADDRESS', cFields.email)} value="jane@example.com" />
-              )}
-            </div>
-          )}
-          {showPhone && (
-            <div className="mt-[9px]">
-              {isPreviewMode ? (
-                <PreviewLabeledInput
-                  label={cReq(cFields.phone) ? cLabel('PHONE', cFields.phone) : 'PHONE (OPTIONAL)'}
-                  value={pf('c.ph')}
-                  onChange={(v) => setPf('c.ph', v)}
-                  placeholder=""
-                  type="tel"
-                />
-              ) : (
-                <FormField label={cReq(cFields.phone) ? cLabel('PHONE', cFields.phone) : 'PHONE (OPTIONAL)'} value="+1 (555) 000-0000" />
-              )}
-            </div>
-          )}
-          {showCompany && (
-            <div className="mt-[9px]">
-              {isPreviewMode ? (
-                <PreviewLabeledInput
-                  label={cLabel('COMPANY', cFields.company)}
-                  value={pf('c.co')}
-                  onChange={(v) => setPf('c.co', v)}
-                  placeholder=""
-                />
-              ) : (
-                <FormField label={cLabel('COMPANY', cFields.company)} value="Acme Inc." />
-              )}
-            </div>
-          )}
-          <div className="pb-[17px]" />
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'basicInfo:Address') {
-    const ac = addressConfig || {};
-    const aQuestion = ac.addressQuestion || "What's your mailing address?";
-    const aHelperText = ac.addressHelperText || '';
-    const aBlockRequired = !!ac.addressRequired;
-    const aFields = ac.addressFields || { street: { visible: true }, city: { visible: true }, state: { visible: true }, postal: { visible: true }, country: { visible: true } };
-    const aReq = (fld) => isCompositeFieldRequired(aBlockRequired, fld);
-    const aLabel = (name, fld) => `${name}${aReq(fld) ? ' *' : ''}`;
-    const showStreet = aFields.street?.visible !== false;
-    const showCity = aFields.city?.visible !== false;
-    const showState = aFields.state?.visible !== false;
-    const showPostal = aFields.postal?.visible !== false;
-    const showCountry = aFields.country?.visible !== false;
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label="Address" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {aQuestion}
-              {aBlockRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {aHelperText && <p className="text-[#888] text-[15px] font-light mt-[1px]">{aHelperText}</p>}
-          {showStreet && (
-            <div className="mt-[19px]">
-              {isPreviewMode ? (
-                <PreviewLabeledInput
-                  label={aLabel('STREET ADDRESS', aFields.street)}
-                  value={pf('a.st')}
-                  onChange={(v) => setPf('a.st', v)}
-                  placeholder=""
-                />
-              ) : (
-                <FormField label={aLabel('STREET ADDRESS', aFields.street)} value="123 Main Street" />
-              )}
-            </div>
-          )}
-          {(showCity || showState) && (
-            <div className="grid grid-cols-2 gap-4 mt-[9px]">
-              {showCity && (isPreviewMode ? (
-                <PreviewLabeledInput label={aLabel('CITY', aFields.city)} value={pf('a.ci')} onChange={(v) => setPf('a.ci', v)} />
-              ) : (
-                <FormField label={aLabel('CITY', aFields.city)} value="San Francisco" />
-              ))}
-              {showState && (isPreviewMode ? (
-                <PreviewLabeledInput label={aLabel('STATE / REGION', aFields.state)} value={pf('a.ste')} onChange={(v) => setPf('a.ste', v)} />
-              ) : (
-                <FormField label={aLabel('STATE / REGION', aFields.state)} value="California" />
-              ))}
-            </div>
-          )}
-          {(showPostal || showCountry) && (
-            <div className="grid grid-cols-2 gap-4 mt-[9px] pb-[17px]">
-              {showPostal && (isPreviewMode ? (
-                <PreviewLabeledInput label={aLabel('POSTAL CODE', aFields.postal)} value={pf('a.po')} onChange={(v) => setPf('a.po', v)} />
-              ) : (
-                <FormField label={aLabel('POSTAL CODE', aFields.postal)} value="94103" />
-              ))}
-              {showCountry && (isPreviewMode ? (
-                <PreviewLabeledInput label={aLabel('COUNTRY', aFields.country)} value={pf('a.ct')} onChange={(v) => setPf('a.ct', v)} />
-              ) : (
-                <FormField label={aLabel('COUNTRY', aFields.country)} value="United States" />
-              ))}
-            </div>
-          )}
-          {!showPostal && !showCountry && <div className="pb-[17px]" />}
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'basicInfo:Work Info') {
-    const wc = workConfig || {};
-    const wQuestion = wc.workQuestion || 'Tell us about your role';
-    const wHelperText = wc.workHelperText || '';
-    const wBlockRequired = !!wc.workRequired;
-    const wFields = wc.workFields || { company: { visible: true }, title: { visible: true }, industry: { visible: true }, teamSize: { visible: true } };
-    const wReq = (fld) => isCompositeFieldRequired(wBlockRequired, fld);
-    const wLabel = (name, fld) => `${name}${wReq(fld) ? ' *' : ''}`;
-    const showWCompany = wFields.company?.visible !== false;
-    const showTitle = wFields.title?.visible !== false;
-    const showIndustry = wFields.industry?.visible !== false;
-    const showTeamSize = wFields.teamSize?.visible !== false;
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label="Work Info" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {wQuestion}
-              {wBlockRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {wHelperText && <p className="text-[#888] text-[15px] font-light mt-[1px]">{wHelperText}</p>}
-          {(showWCompany || showTitle) && (
-            <div className="grid grid-cols-2 gap-4 mt-[19px]">
-              {showWCompany && (isPreviewMode ? (
-                <PreviewLabeledInput label={wLabel('COMPANY', wFields.company)} value={pf('w.co')} onChange={(v) => setPf('w.co', v)} />
-              ) : (
-                <FormField label={wLabel('COMPANY', wFields.company)} value="Acme Inc." />
-              ))}
-              {showTitle && (isPreviewMode ? (
-                <PreviewLabeledInput label={wLabel('JOB TITLE', wFields.title)} value={pf('w.ti')} onChange={(v) => setPf('w.ti', v)} />
-              ) : (
-                <FormField label={wLabel('JOB TITLE', wFields.title)} value="Product Manager" />
-              ))}
-            </div>
-          )}
-          {(showIndustry || showTeamSize) && (
-            <div className="grid grid-cols-2 gap-4 mt-[9px] pb-[17px]">
-              {showIndustry && (isPreviewMode ? (
-                <PreviewLabeledInput label={wLabel('INDUSTRY', wFields.industry)} value={pf('w.ind')} onChange={(v) => setPf('w.ind', v)} />
-              ) : (
-                <FormField label={wLabel('INDUSTRY', wFields.industry)} value="Technology" />
-              ))}
-              {showTeamSize && (isPreviewMode ? (
-                <PreviewLabeledInput label={wLabel('TEAM SIZE', wFields.teamSize)} value={pf('w.ts')} onChange={(v) => setPf('w.ts', v)} />
-              ) : (
-                <FormField label={wLabel('TEAM SIZE', wFields.teamSize)} value="11–50 people" />
-              ))}
-            </div>
-          )}
-          {!showIndustry && !showTeamSize && <div className="pb-[17px]" />}
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'qualitative:Short text') {
-    const stc = shortTextConfig || {};
-    const stQuestion = stc.shortTextQuestion || "What's your name?";
-    const stHelper = stc.shortTextHelperText || 'Please enter your full name as it appears on official documents.';
-    const stPlaceholder = stc.shortTextPlaceholder || 'Type your answer here…';
-    const stMaxChars = stc.shortTextMaxChars ?? 100;
-    const stMinChars = Math.max(0, Number(stc.shortTextMinChars) || 0);
-    const stValidation = stc.shortTextValidation || 'None';
-    const stInputType = TEXT_VALIDATION_INPUT_TYPE[stValidation] || 'text';
-    const stHidden = !!stc.shortTextHidden;
-    const stRequired = !!stc.shortTextRequired;
-    const stAlign = stc.shortTextAlign || 'left';
-    const stSize = stc.shortTextSize || 'M';
-    const stFontSize = { S: '16px', M: '20px', L: '32px' }[stSize] || '20px';
-    const stTextAlign = stAlign === 'center' ? 'text-center' : stAlign === 'right' ? 'text-right' : 'text-left';
-    content = (
-      <>
-        <div
-          className={`relative flex flex-col px-14 pt-11 pb-5 ${stHidden && !isPreviewMode ? 'opacity-40' : ''} ${stHidden && isPreviewMode ? 'hidden' : ''}`}
-        >
-          <HiddenFieldOverlay show={stHidden && !isPreviewMode} />
-          <SectionBadge num={blockNum} label="Short text" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p
-              className={`font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0 ${stTextAlign}`}
-              style={{ fontSize: stFontSize, fontWeight: '600' }}
-            >
-              {stQuestion}
-              {stRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {stHelper && (
-            <p className={`text-[#888] text-[15px] font-light mt-[1px] ${stTextAlign}`}>{stHelper}</p>
-          )}
-          {(stValidation !== 'None' || stMinChars > 0) && (
-            <p className={`text-[#aaa] text-[11px] mt-[4px] ${stTextAlign}`}>
-              {stValidation !== 'None' ? `${stValidation} format` : ''}
-              {stValidation !== 'None' && stMinChars > 0 ? ' · ' : ''}
-              {stMinChars > 0 ? `min ${stMinChars} characters` : ''}
-            </p>
-          )}
-          <div className="mt-[19px]">
-            {isPreviewMode && shortTextResponseQualityConfig?.enabled ? (
-              <>
-                <div className="border-b-2 border-[rgba(0,0,0,0.12)] pb-[10px] pt-[8px]">
-                  <input
-                    type={stInputType}
-                    value={shortTextDraft}
-                    onChange={(e) => setShortTextDraft(e.target.value.slice(0, stMaxChars))}
-                    maxLength={stMaxChars}
-                    placeholder={stPlaceholder}
-                    aria-label={stQuestion}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className={`w-full bg-transparent text-[14px] font-light text-[#111] outline-none border-0 placeholder:text-[#bbb] ${stTextAlign}`}
-                  />
-                </div>
-                <ResponseQualityFeedback
-                  evaluation={responseQualityEvaluation}
-                  charCount={shortTextDraft.length}
-                  maxChars={stMaxChars}
-                  answerLabel="Short answer"
-                />
-              </>
-            ) : (
-              <>
-                <div className="border-b-2 border-[rgba(0,0,0,0.12)] pb-[10px] pt-[8px]">
-                  <input
-                    type={stInputType}
-                    value={shortTextDraft}
-                    onChange={(e) => setShortTextDraft(e.target.value.slice(0, stMaxChars))}
-                    maxLength={stMaxChars}
-                    placeholder={stPlaceholder}
-                    aria-label={stQuestion}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className={`w-full bg-transparent text-[14px] font-light text-[#111] outline-none border-0 placeholder:text-[#bbb] ${stTextAlign}`}
-                  />
-                </div>
-                <div className="flex justify-between items-center pt-[11px] pb-[9px]">
-                  <p className="text-[#bbb] text-[11px]">Short answer</p>
-                  <p className="text-[#bbb] text-[11px]">
-                    {shortTextDraft.length}{stMinChars > 0 ? ` (min ${stMinChars})` : ''} / {stMaxChars}
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'qualitative:Long text') {
-    const ltc = longTextConfig || {};
-    const ltQuestion = ltc.longTextQuestion || 'Tell us about your experience';
-    const ltHelper = ltc.longTextHelperText || "Share as much or as little as you'd like.";
-    const ltPlaceholder = ltc.longTextPlaceholder || 'Type your answer here…';
-    const ltMaxChars = ltc.longTextMaxChars ?? 500;
-    const ltMinChars = Math.max(0, Number(ltc.longTextMinChars) || 0);
-    const ltValidation = ltc.longTextValidation || 'None';
-    const ltHidden = !!ltc.longTextHidden;
-    const ltRequired = !!ltc.longTextRequired;
-    const ltAlign = ltc.longTextAlign || 'left';
-    const ltSize = ltc.longTextSize || 'M';
-    const ltFontSize = { S: '16px', M: '20px', L: '32px' }[ltSize] || '20px';
-    const ltTextAlign = ltAlign === 'center' ? 'text-center' : ltAlign === 'right' ? 'text-right' : 'text-left';
-    const ltInputMode = { Email: 'email', URL: 'url', Number: 'numeric', Phone: 'tel' }[ltValidation];
-    content = (
-      <>
-        <div
-          className={`relative flex flex-col px-14 pt-11 pb-5 ${ltHidden && !isPreviewMode ? 'opacity-40' : ''} ${ltHidden && isPreviewMode ? 'hidden' : ''}`}
-        >
-          <HiddenFieldOverlay show={ltHidden && !isPreviewMode} />
-          <SectionBadge num={blockNum} label="Long text" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p
-              className={`font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0 ${ltTextAlign}`}
-              style={{ fontSize: ltFontSize, fontWeight: '600' }}
-            >
-              {ltQuestion}
-              {ltRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {ltHelper && (
-            <p className={`text-[#888] text-[15px] font-light mt-[1px] ${ltTextAlign}`}>{ltHelper}</p>
-          )}
-          {(ltValidation !== 'None' || ltMinChars > 0) && (
-            <p className={`text-[#aaa] text-[11px] mt-[4px] ${ltTextAlign}`}>
-              {ltValidation !== 'None' ? `${ltValidation} format` : ''}
-              {ltValidation !== 'None' && ltMinChars > 0 ? ' · ' : ''}
-              {ltMinChars > 0 ? `min ${ltMinChars} characters` : ''}
-            </p>
-          )}
-          <div className="mt-[19px]">
-            {isPreviewMode && responseQualityConfig?.enabled ? (
-              <>
-                <div className="border-b-2 border-[rgba(0,0,0,0.12)] pb-[10px] pt-[8px]">
-                  <textarea
-                    value={longTextDraft}
-                    onChange={(e) => setLongTextDraft(e.target.value.slice(0, ltMaxChars))}
-                    maxLength={ltMaxChars}
-                    placeholder={ltPlaceholder}
-                    inputMode={ltInputMode}
-                    aria-label={ltQuestion}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    rows={3}
-                    className={`w-full min-h-[72px] text-[14px] font-light text-[#111] bg-transparent outline-none border-0 resize-none placeholder:text-[#bbb] ${ltTextAlign}`}
-                  />
-                </div>
-                <ResponseQualityFeedback
-                  evaluation={responseQualityEvaluation}
-                  charCount={longTextDraft.length}
-                  maxChars={ltMaxChars}
-                />
-              </>
-            ) : (
-              <>
-                <div className="border border-[rgba(0,0,0,0.1)] rounded-[8px] px-4 py-3 min-h-[120px]">
-                  {isPreviewMode ? (
-                    <textarea
-                      value={longTextDraft}
-                      onChange={(e) => setLongTextDraft(e.target.value.slice(0, ltMaxChars))}
-                      maxLength={ltMaxChars}
-                      placeholder={ltPlaceholder}
-                      inputMode={ltInputMode}
-                      aria-label={ltQuestion}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      className={`w-full min-h-[100px] text-[14px] font-light text-[#111] bg-transparent outline-none border-0 resize-y placeholder:text-[#bbb] ${ltTextAlign}`}
-                    />
-                  ) : (
-                    <p className={`text-[#bbb] text-[14px] font-light ${ltTextAlign}`}>{ltPlaceholder}</p>
-                  )}
-                </div>
-                <div className="flex justify-between items-center pt-[11px] pb-[9px]">
-                  <p className="text-[#bbb] text-[11px]">Long answer</p>
-                  <p className="text-[#bbb] text-[11px]">
-                    {isPreviewMode ? longTextDraft.length : 0}{ltMinChars > 0 && isPreviewMode ? ` (min ${ltMinChars})` : ''} / {ltMaxChars}
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'choiceBased:Single') {
-    const sc = singleConfig || {};
-    const sQuestion = sc.singleQuestion || 'How did you hear about us?';
-    const sHelper = sc.singleHelperText || 'Choose the option that best describes your experience.';
-    const sAllowOther = sc.singleAllowOther ?? true;
-    const sLayout = sc.singleLayout || 'List';
-    const sHeight = sc.singleOptionHeight || 'M';
-    const sHeightPy = sHeight === 'S' ? 'py-[8px]' : sHeight === 'L' ? 'py-[18px]' : 'py-[13px]';
-    const allOpts = singleDisplayOpts;
-    const isList = sLayout === 'List';
-    const is2col = sLayout === '2col';
-    const onOpenPanel = sc.onOpenPanel;
-    const sMulti = sc.singleMultipleSelect ?? false;
-    const sRequired = !!sc.singleRequired;
-    const sShowHints = !!sc.singleShowKeyboardHints;
-    const sMaxChoices = sMulti ? sc.singleMaxChoices : 1;
-    const sMinChoices = sMulti ? (Number(sc.singleMinChoices) || 1) : (sRequired ? 1 : 0);
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5 min-h-0 flex-1">
-          <SectionBadge num={blockNum} label="Single choice" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {sQuestion}
-              {sRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {sHelper && <p className="text-[#888] text-[15px] font-light mt-[1px]">{sHelper}</p>}
-          {sMulti && (sMinChoices > 1 || sMaxChoices != null) && (
-            <p className="text-[#aaa] text-[11px] mt-[4px] mb-[12px]">
-              Select {sMinChoices}{sMaxChoices != null ? `–${sMaxChoices}` : '+'} option{sMaxChoices !== 1 ? 's' : ''}
-            </p>
-          )}
-          {(!sMulti || !(sMinChoices > 1 || sMaxChoices != null)) && sHelper && <div className="mb-[19px]" />}
-          <div className={`mb-5 overflow-y-auto max-h-[320px] ${isList ? 'flex flex-col' : is2col ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-3 gap-2'}`}>
-            {allOpts.map((opt, i) => {
-              const isOther = sAllowOther && opt === 'Other';
-              const hint = isPreviewMode && sShowHints && !isOther ? CHOICE_KEYBOARD_HINT(i) : null;
-              const isPicked = previewPicks.includes(opt);
-              const markCls = sMulti
-                ? `w-[20px] h-[20px] rounded-[4px] flex items-center justify-center border-2 shrink-0 ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`
-                : `w-[22px] h-[22px] rounded-full flex items-center justify-center border-2 shrink-0 ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`;
-              const mark = (
-                <div className={markCls}>
-                  {isPicked && (sMulti ? <RiCheckLine size={12} className="text-white" /> : <div className="w-[7px] h-[7px] rounded-full bg-white" />)}
-                </div>
-              );
-              if (isList) {
-                const rowCls = `flex items-center gap-4 px-4 ${sHeightPy} border-x border-b ${i === 0 ? 'border-t rounded-t-[8px]' : ''} ${i === allOpts.length - 1 ? 'rounded-b-[8px]' : ''} ${isOther ? 'border-[rgba(0,0,0,0.06)] bg-[rgba(0,0,0,0.01)]' : 'border-[rgba(0,0,0,0.08)]'} ${isPreviewMode && !isOther ? 'cursor-pointer hover:bg-[rgba(0,0,0,0.02)]' : ''}`;
-                if (isPreviewMode) {
-                  return (
-                    <button
-                      type="button"
-                      key={opt}
-                      onClick={() => !isOther && togglePreviewPick(opt, sMulti, sMaxChoices)}
-                      className={`w-full text-left ${rowCls}`}
-                    >
-                      {hint && <span className="text-[10px] font-semibold text-[#bbb] w-4 shrink-0">{hint}</span>}
-                      {mark}
-                      <span className={`text-[14px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                    </button>
-                  );
-                }
-                return (
-                  <div
-                    key={opt}
-                    className={rowCls}
-                  >
-                    {hint && <span className="text-[10px] font-semibold text-[#bbb] w-4 shrink-0">{hint}</span>}
-                    <div className="w-[22px] h-[22px] rounded-full flex items-center justify-center border-2 shrink-0 border-[rgba(0,0,0,0.2)]" />
-                    <span className={`text-[14px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                  </div>
-                );
-              }
-              const tileCls = `flex items-center gap-3 px-3 ${sHeightPy} border rounded-[8px] border-[rgba(0,0,0,0.08)] ${isOther ? 'bg-[rgba(0,0,0,0.01)]' : ''} ${isPreviewMode && !isOther ? 'cursor-pointer hover:border-[rgba(0,0,0,0.2)]' : ''}`;
-              if (isPreviewMode) {
-                return (
-                  <button
-                    type="button"
-                    key={opt}
-                    onClick={() => !isOther && togglePreviewPick(opt, sMulti, sMaxChoices)}
-                    className={`w-full text-left ${tileCls}`}
-                  >
-                    {hint && <span className="text-[10px] font-semibold text-[#bbb] w-4 shrink-0">{hint}</span>}
-                    {sMulti ? (
-                      <div className={`w-[18px] h-[18px] rounded-[4px] flex items-center justify-center border-2 shrink-0 ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`}>
-                        {isPicked && <RiCheckLine size={11} className="text-white" />}
-                      </div>
-                    ) : (
-                      mark
-                    )}
-                    <span className={`text-[13px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                  </button>
-                );
-              }
-              return (
-                <div
-                  key={opt}
-                  className={tileCls}
-                >
-                  <div className="w-[20px] h-[20px] rounded-full flex items-center justify-center border-2 shrink-0 border-[rgba(0,0,0,0.2)]" />
-                  <span className={`text-[13px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        {!isPreviewMode && (
-        <div className="border-t border-[rgba(0,0,0,0.1)] flex gap-2 items-center px-14 py-[19px]">
-          {onOpenPanel && (
-            <button
-              onClick={onOpenPanel}
-              className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-            >
-              <RiPencilLine size={12} className="shrink-0" />
-              Edit options
-            </button>
-          )}
-          <button
-            onClick={onDelete}
-            className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-[rgba(255,245,245,0.7)] border border-[rgba(200,50,50,0.2)] text-[#d63030] text-[12px] cursor-pointer hover:bg-[rgba(255,235,235,0.9)] transition-colors whitespace-nowrap"
-          >
-            <RiDeleteBin6Line size={12} className="shrink-0" />
-            Delete
-          </button>
-          <div className="flex-1" />
-          <button className="flex items-center gap-[5px] px-[16px] py-[8px] rounded-[8px] bg-[#111] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap">
-            <RiCheckLine size={11} className="shrink-0" />
-            Save
-          </button>
-        </div>
-        )}
-      </>
-    );
-  } else if (cardKey === 'choiceBased:Multiple') {
-    const mc = multipleConfig || {};
-    const mQuestion = mc.multipleQuestion || 'Which features do you use most?';
-    const mHelper = mc.multipleHelperText || 'Select all that apply.';
-    const mAllowOther = mc.multipleAllowOther ?? false;
-    const mLayout = mc.multipleLayout || 'List';
-    const mMultipleSelect = mc.multipleMultipleSelect ?? false;
-    const mHeight = mc.multipleOptionHeight || 'M';
-    const mHeightPy = mHeight === 'S' ? 'py-[8px]' : mHeight === 'L' ? 'py-[18px]' : 'py-[13px]';
-    const mOnOpenPanel = mc.onOpenPanel;
-    const allMOpts = multipleDisplayOpts;
-    const mRequired = !!mc.multipleRequired;
-    const mShowHints = !!mc.multipleShowKeyboardHints;
-    const mMaxChoices = mMultipleSelect ? mc.multipleMaxChoices : 1;
-    const mMinChoices = mMultipleSelect ? (Number(mc.multipleMinChoices) || 1) : (mRequired ? 1 : 0);
-    const isMList = mLayout === 'List';
-    const isM2col = mLayout === '2col';
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5 min-h-0 flex-1">
-          <SectionBadge num={blockNum} label="Multiple choice" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {mQuestion}
-              {mRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {mHelper && <p className="text-[#888] text-[15px] font-light mt-[1px]">{mHelper}</p>}
-          {mMultipleSelect && (mMinChoices > 1 || mMaxChoices != null) && (
-            <p className="text-[#aaa] text-[11px] mt-[4px] mb-[12px]">
-              Select {mMinChoices}{mMaxChoices != null ? `–${mMaxChoices}` : '+'} option{mMaxChoices !== 1 ? 's' : ''}
-            </p>
-          )}
-          {(!mMultipleSelect || !(mMinChoices > 1 || mMaxChoices != null)) && mHelper && <div className="mb-[19px]" />}
-          <div className={`mb-5 overflow-y-auto max-h-[320px] ${isMList ? 'flex flex-col' : isM2col ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-3 gap-2'}`}>
-            {allMOpts.map((opt, i) => {
-              const isOther = mAllowOther && opt === 'Other';
-              const mHint = isPreviewMode && mShowHints && !isOther ? CHOICE_KEYBOARD_HINT(i) : null;
-              const isPicked = previewPicks.includes(opt);
-              const markCls = mMultipleSelect
-                ? `flex items-center justify-center shrink-0 border-2 w-[20px] h-[20px] rounded-[4px] ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`
-                : `flex items-center justify-center shrink-0 border-2 w-[22px] h-[22px] rounded-full ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`;
-              const mark = (
-                <div className={markCls}>
-                  {isPicked && (mMultipleSelect ? <RiCheckLine size={12} className="text-white" /> : <div className="w-[7px] h-[7px] rounded-full bg-white" />)}
-                </div>
-              );
-              if (isMList) {
-                const rowCls = `flex items-center gap-4 px-4 ${mHeightPy} border-x border-b ${i === 0 ? 'border-t rounded-t-[8px]' : ''} ${i === allMOpts.length - 1 ? 'rounded-b-[8px]' : ''} ${isOther ? 'border-[rgba(0,0,0,0.06)] bg-[rgba(0,0,0,0.01)]' : 'border-[rgba(0,0,0,0.08)]'} ${isPreviewMode && !isOther ? 'cursor-pointer hover:bg-[rgba(0,0,0,0.02)]' : ''}`;
-                if (isPreviewMode) {
-                  return (
-                    <button type="button" key={i} onClick={() => !isOther && togglePreviewPick(opt, mMultipleSelect, mMaxChoices)} className={`w-full text-left ${rowCls}`}>
-                      {mHint && <span className="text-[10px] font-semibold text-[#bbb] w-4 shrink-0">{mHint}</span>}
-                      {mark}
-                      <span className={`text-[14px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                    </button>
-                  );
-                }
-                return (
-                  <div
-                    key={i}
-                    className={rowCls}
-                  >
-                    {mHint && <span className="text-[10px] font-semibold text-[#bbb] w-4 shrink-0">{mHint}</span>}
-                    <div className={`flex items-center justify-center shrink-0 border-2 border-[rgba(0,0,0,0.2)] ${mMultipleSelect ? 'w-[20px] h-[20px] rounded-[4px]' : 'w-[22px] h-[22px] rounded-full'}`} />
-                    <span className={`text-[14px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                  </div>
-                );
-              }
-              const tileCls = `flex items-center gap-3 px-3 ${mHeightPy} border rounded-[8px] border-[rgba(0,0,0,0.08)] ${isOther ? 'bg-[rgba(0,0,0,0.01)]' : ''} ${isPreviewMode && !isOther ? 'cursor-pointer hover:border-[rgba(0,0,0,0.2)]' : ''}`;
-              if (isPreviewMode) {
-                return (
-                  <button type="button" key={i} onClick={() => !isOther && togglePreviewPick(opt, mMultipleSelect, mMaxChoices)} className={`w-full text-left ${tileCls}`}>
-                    {mHint && <span className="text-[10px] font-semibold text-[#bbb] w-4 shrink-0">{mHint}</span>}
-                    {mMultipleSelect ? (
-                      <div className={`flex items-center justify-center shrink-0 border-2 w-[18px] h-[18px] rounded-[4px] ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`}>
-                        {isPicked && <RiCheckLine size={11} className="text-white" />}
-                      </div>
-                    ) : (
-                      mark
-                    )}
-                    <span className={`text-[13px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                  </button>
-                );
-              }
-              return (
-                <div
-                  key={i}
-                  className={tileCls}
-                >
-                  <div className={`flex items-center justify-center shrink-0 border-2 border-[rgba(0,0,0,0.2)] ${mMultipleSelect ? 'w-[18px] h-[18px] rounded-[4px]' : 'w-[20px] h-[20px] rounded-full'}`} />
-                  <span className={`text-[13px] ${isOther ? 'text-[#aaa] italic' : 'text-[#111]'}`}>{opt}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        {!isPreviewMode && (
-        <div className="border-t border-[rgba(0,0,0,0.1)] flex gap-2 items-center px-14 py-[19px]">
-          {mOnOpenPanel && (
-            <button
-              onClick={mOnOpenPanel}
-              className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-white/70 border border-[rgba(0,0,0,0.16)] text-[#444] text-[12px] cursor-pointer hover:bg-[rgba(245,245,245,0.9)] transition-colors whitespace-nowrap"
-            >
-              <RiPencilLine size={12} className="shrink-0" />
-              Edit options
-            </button>
-          )}
-          <button
-            onClick={onDelete}
-            className="flex items-center gap-[5px] px-[14px] py-[8px] rounded-[8px] bg-[rgba(255,245,245,0.7)] border border-[rgba(200,50,50,0.2)] text-[#d63030] text-[12px] cursor-pointer hover:bg-[rgba(255,235,235,0.9)] transition-colors whitespace-nowrap"
-          >
-            <RiDeleteBin6Line size={12} className="shrink-0" />
-            Delete
-          </button>
-          <div className="flex-1" />
-          <button className="flex items-center gap-[5px] px-[16px] py-[8px] rounded-[8px] bg-[#111] text-white text-[12px] font-medium cursor-pointer hover:bg-[#2c2c2c] transition-colors whitespace-nowrap">
-            <RiCheckLine size={11} className="shrink-0" />
-            Save
-          </button>
-        </div>
-        )}
-      </>
-    );
-  } else if (cardKey === 'choiceBased:Media') {
-    const mec = mediaConfig || {};
-    const meQuestion = mec.mediaQuestion || 'Choose an image option';
-    const meHelper = mec.mediaHelperText || 'Select the image that best represents your answer.';
-    const meOpts = mediaDisplayOpts.length ? mediaDisplayOpts : [{ label: 'Option A', image: null }, { label: 'Option B', image: null }, { label: 'Option C', image: null }, { label: 'Option D', image: null }];
-    const meAllowMultiple = mec.mediaAllowMultiple || false;
-    const meRequired = !!mec.mediaRequired;
-    const meMaxChoices = meAllowMultiple ? mec.mediaMaxChoices : 1;
-    const meMinChoices = meAllowMultiple ? (Number(mec.mediaMinChoices) || 1) : (meRequired ? 1 : 0);
-    const meLayout = mec.mediaLayout || '2col';
-    const meOptHeight = mec.mediaOptionHeight || 'M';
-    const meGridCols = meLayout === 'list' ? 'grid-cols-1' : meLayout === '3col' ? 'grid-cols-3' : 'grid-cols-2';
-    const meImgRatio = meOptHeight === 'S' ? '16/4' : meOptHeight === 'L' ? '16/7' : '16/5';
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-6">
-          <SectionBadge num={blockNum} label="Media choice" />
-          <div className="pt-[6px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '26px', fontWeight: '600' }}>
-              {meQuestion}
-              {meRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {meHelper && <p className="text-[#888] text-[15px] font-light mt-px">{meHelper}</p>}
-          {meAllowMultiple && (meMinChoices > 1 || meMaxChoices != null) && (
-            <p className="text-[#aaa] text-[11px] mt-[4px] mb-[10px]">
-              Select {meMinChoices}{meMaxChoices != null ? `–${meMaxChoices}` : '+'} option{meMaxChoices !== 1 ? 's' : ''}
-            </p>
-          )}
-          {(!meAllowMultiple || !(meMinChoices > 1 || meMaxChoices != null)) && meHelper && <div className="mb-[10px]" />}
-        </div>
-        <div className="overflow-y-auto px-14 pb-3" style={{ maxHeight: '290px' }}>
-          <div className={`grid ${meGridCols} gap-2`}>
-            {meOpts.map((opt, i) => {
-              const optKey = opt.label || `Option ${i + 1}`;
-              const isPicked = previewPicks.includes(optKey);
-              const tile = (
-                <>
-                  {opt.image ? (
-                    <img src={opt.image} alt={opt.label} className="w-full object-cover" style={{ aspectRatio: meImgRatio }} />
-                  ) : (
-                    <div className="bg-[rgba(0,0,0,0.04)] flex items-center justify-center" style={{ aspectRatio: meImgRatio }}>
-                      <RiImageLine size={20} className="text-[#bbb]" />
-                    </div>
-                  )}
-                  <div className="px-3 py-[6px] flex items-center gap-2">
-                    <div className={`shrink-0 flex items-center justify-center border-2 ${meAllowMultiple ? 'w-[16px] h-[16px] rounded-[4px]' : 'w-[16px] h-[16px] rounded-full'} ${isPicked ? 'border-[#111] bg-[#111]' : 'border-[rgba(0,0,0,0.2)]'}`}>
-                      {isPicked && (meAllowMultiple ? <RiCheckLine size={10} className="text-white" /> : <div className="w-[5px] h-[5px] rounded-full bg-white" />)}
-                    </div>
-                    <span className="text-[12px] text-[#111]">{optKey}</span>
-                  </div>
-                </>
-              );
-              if (isPreviewMode) {
-                return (
-                  <button
-                    type="button"
-                    key={i}
-                    onClick={() => togglePreviewPick(optKey, meAllowMultiple, meMaxChoices)}
-                    className={`border rounded-[10px] overflow-hidden text-left transition-colors cursor-pointer ${isPicked ? 'border-[#111] ring-1 ring-[#111]' : 'border-[rgba(0,0,0,0.1)] hover:border-[rgba(0,0,0,0.25)]'}`}
-                  >
-                    {tile}
-                  </button>
-                );
-              }
-              return (
-                <div key={i} className="border rounded-[10px] overflow-hidden border-[rgba(0,0,0,0.1)] hover:border-[rgba(0,0,0,0.25)] transition-colors cursor-pointer">
-                  {opt.image ? (
-                    <img src={opt.image} alt={opt.label} className="w-full object-cover" style={{ aspectRatio: meImgRatio }} />
-                  ) : (
-                    <div className="bg-[rgba(0,0,0,0.04)] flex items-center justify-center" style={{ aspectRatio: meImgRatio }}>
-                      <RiImageLine size={20} className="text-[#bbb]" />
-                    </div>
-                  )}
-                  <div className="px-3 py-[6px] flex items-center gap-2">
-                    <div className={`shrink-0 flex items-center justify-center border-2 border-[rgba(0,0,0,0.2)] ${meAllowMultiple ? 'w-[16px] h-[16px] rounded-[4px]' : 'w-[16px] h-[16px] rounded-full'}`} />
-                    <span className="text-[12px] text-[#111]">{opt.label || `Option ${i + 1}`}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'interactive:Maps') {
-    const mapc = mapConfig || {};
-    const mapQ = mapc.mapQuestion || 'Where are you located?';
-    const mapH = mapc.mapHelperText || 'Drag the pin to your location';
-    const mapLat = mapSelection?.lat ?? mapc.mapDefaultLat ?? DEFAULT_MAP_CENTER.lat;
-    const mapLng = mapSelection?.lng ?? mapc.mapDefaultLng ?? DEFAULT_MAP_CENTER.lng;
-    const mapAddr = mapSelection?.address ?? mapc.mapDefaultAddress ?? DEFAULT_MAP_CENTER.address;
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label="Maps" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {mapQ}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {mapH && <p className="text-[#888] text-[15px] font-light mt-[1px] mb-[15px]">{mapH}</p>}
-          {isPreviewMode ? (
-            <Suspense
-              fallback={
-                <div
-                  className="mb-5 rounded-[8px] border border-[#dde6dd] bg-[#e8ede8] flex items-center justify-center text-[13px] text-[#888]"
-                  style={{ height: 280 }}
-                >
-                  Loading map…
-                </div>
-              }
-            >
-              <MapLocationPicker
-                latitude={mapLat}
-                longitude={mapLng}
-                address={mapAddr}
-                zoom={mapc.mapZoom ?? 12}
-                mapStyle={mapc.mapType === 'roadmap' ? 'default' : (mapc.mapType || 'default')}
-                height={mapc.mapHeight || 'M'}
-                allowPinMovement={mapc.mapAllowPinMovement !== false}
-                showSearch={mapc.mapShowSearchBar !== false}
-                restrictRadius={!!mapc.mapRestrictRadius}
-                restrictRadiusKm={mapc.mapRestrictRadiusKm ?? 5}
-                onChange={(loc) => setMapSelection(loc)}
-                searchPlaceholder="Search for a location..."
-                className="mb-5"
-              />
-            </Suspense>
-          ) : (
-            <MapFieldStaticPreview
-              latitude={mapLat}
-              longitude={mapLng}
-              address={mapAddr}
-              height={mapc.mapHeight || 'M'}
-              showSearch={mapc.mapShowSearchBar !== false}
-              className="mb-5"
-            />
-          )}
-          {mapc.mapPinLabel && (
-            <p className="text-[11px] text-[#aaa] -mt-3 mb-4" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-              {mapc.mapPinLabel}
-            </p>
-          )}
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'interactive:Upload') {
-    content = <FileUploadCard blockNum={blockNum} onDelete={onDelete} config={uploadConfig} isPreviewMode={isPreviewMode} />;
-  } else if (cardKey === 'interactive:Multi-image upload') {
-    return <MultiImageUploadCard blockNum={blockNum} onDelete={onDelete} config={multiImageConfig} fullCanvas={fullCanvas} cardColor={cardColor} cardImage={cardImage} isPreviewMode={isPreviewMode} previewStepNav={previewStepNav} previewScreenValidatorRef={previewScreenValidatorRef} />;
-  } else if (cardKey === 'interactive:Captcha') {
-    const capc = captchaConfig || {};
-    const capProvider = capc.captchaProvider || 'Google reCAPTCHA v3';
-    const capEnabled = capc.captchaEnabled !== false;
-    const PROVIDER_SHORT = {
-      'Google reCAPTCHA v3': 'reCAPTCHA',
-      'Google reCAPTCHA v2': 'reCAPTCHA',
-      'hCaptcha': 'hCaptcha',
-      'Cloudflare Turnstile': 'Turnstile',
-    };
-    const capLabel = PROVIDER_SHORT[capProvider] || capProvider;
-    content = (
-      <>
-        <div className={`flex flex-col px-14 pt-11 pb-5 transition-opacity ${capEnabled ? 'opacity-100' : 'opacity-40'}`}>
-          <SectionBadge num={blockNum} label="Captcha" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-medium text-[#111] tracking-[-0.52px] leading-[32.5px] flex-1 min-w-0" style={{ fontSize: '26px' }}>
-              One last check before we submit
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          <p className="text-[#888] text-[15px] font-light mt-px mb-[19px] leading-[20.8px]">Please confirm you're not a robot.</p>
-          <div className="flex items-center gap-[14px] bg-[rgba(255,255,255,0.5)] border border-[rgba(0,0,0,0.16)] rounded-[10px] px-[21px] py-[17px]">
-            <button
-              onClick={() => capEnabled && setCaptchaChecked((v) => !v)}
-              className={`w-[22px] h-[22px] rounded-[5px] border shrink-0 flex items-center justify-center transition-colors ${
-                capEnabled ? 'cursor-pointer' : 'cursor-default'
-              } ${
-                captchaChecked
-                  ? 'bg-[#111] border-[#111]'
-                  : 'bg-transparent border-[rgba(0,0,0,0.16)] hover:border-[rgba(0,0,0,0.35)]'
-              }`}
-            >
-              <AnimatePresence>
-                {captchaChecked && (
-                  <motion.div
-                    initial={{ scale: 0, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    exit={{ scale: 0, opacity: 0 }}
-                    transition={{ duration: 0.15, ease: 'easeOut' }}
-                  >
-                    <RiCheckLine size={13} className="text-white" />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </button>
-            <span className="text-[14px] text-[#111] flex-1 select-none" style={{ fontFamily: "'DM Sans', sans-serif" }}>I'm not a robot</span>
-            <div className="flex flex-col items-center gap-[2px]">
-              <span className="text-[16px] leading-none">🔒</span>
-              <span className="text-[8px] text-black leading-none">{capLabel}</span>
-            </div>
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} />}
-      </>
-    );
-  } else if (cardKey === 'numeric:Rating') {
-    const rc = ratingConfig || {};
-    const rQuestion = rc.ratingQuestion || 'How would you rate your overall experience?';
-    const rStyle = rc.ratingStyle || 'Stars';
-    const rMax = rc.ratingMaxRating || 5;
-    const rLow = rc.ratingLowLabel ?? 'Very poor';
-    const rHigh = rc.ratingHighLabel ?? 'Excellent';
-    const rShowLabels = rc.ratingShowLabels !== false;
-    const rIconSize = rc.ratingIconSize || 'M';
-    const iconPx = rIconSize === 'S' ? 13 : rIconSize === 'L' ? 20 : 16;
-    const btnSizePx = rIconSize === 'S' ? 30 : rIconSize === 'L' ? 42 : 36;
-
-    const activeRating = ratingHover || ratingValue;
-
-    const renderIconBtn = (n) => {
-      const filled = n <= activeRating;
-      if (rStyle === '1-10') {
-        return (
-          <button
-            key={n}
-            onClick={() => setRatingValue(n === ratingValue ? 0 : n)}
-            onMouseEnter={() => setRatingHover(n)}
-            onMouseLeave={() => setRatingHover(0)}
-            className="flex-1 flex items-center justify-center py-[8px] transition-all duration-150 cursor-pointer rounded-[8px]"
-            style={{
-              border: `1px solid ${filled ? '#111' : '#e2e2de'}`,
-              background: filled ? '#111' : 'transparent',
-              minWidth: 0,
-            }}
-            aria-label={`Rate ${n}`}
-          >
-            <span className="text-[13.5px] font-medium leading-none" style={{ color: filled ? '#fff' : '#141412' }}>{n}</span>
-          </button>
-        );
-      }
-      const FilledIcon = rStyle === 'Hearts' ? RiHeartFill : RiStarFill;
-      const EmptyIcon = rStyle === 'Hearts' ? RiHeartLine : RiStarLine;
-      return (
-        <button
-          key={n}
-          onClick={() => setRatingValue(n === ratingValue ? 0 : n)}
-          onMouseEnter={() => setRatingHover(n)}
-          onMouseLeave={() => setRatingHover(0)}
-          className="shrink-0 flex items-center justify-center transition-all duration-150 cursor-pointer"
-          style={{
-            width: btnSizePx,
-            height: btnSizePx,
-            borderRadius: 9,
-            border: `1px solid ${filled ? '#111' : 'rgba(0,0,0,0.16)'}`,
-            background: filled ? '#111' : 'rgba(255,255,255,0.6)',
-            padding: 1,
-          }}
-          aria-label={`Rate ${n} out of ${rMax}`}
-        >
-          {filled
-            ? <FilledIcon size={iconPx} className="text-white" />
-            : <EmptyIcon size={iconPx} className="text-[#555]" />
-          }
-        </button>
-      );
-    };
-
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label="Rating" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-medium text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '26px' }}>
-              {rQuestion}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          <div className={`flex pt-[19px] pb-[17px] ${rStyle === '1-10' ? '' : 'justify-center'}`}>
-            <div className={`flex flex-col ${rStyle === '1-10' ? 'w-full' : ''}`}>
-              <div className={`flex items-center ${rStyle === '1-10' ? 'gap-[6px]' : 'gap-2'}`}>
-                {Array.from({ length: rMax }, (_, i) => i + 1).map(renderIconBtn)}
-              </div>
-              {rShowLabels && (
-                <div className="flex items-start justify-between pt-[6px]">
-                  <span className="text-[10px] text-black font-light">{rLow}</span>
-                  <span className="text-[10px] text-black font-light">{rHigh}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else if (cardKey === 'numeric:Time') {
-    content = (
-      <TimePickerCard
-        blockNum={blockNum}
-        onDelete={onDelete}
-        config={timeConfig}
-        isPreviewMode={isPreviewMode}
-        previewRequiredHint={previewRequiredHint}
-        onTimeChange={setTimeSelection}
-      />
-    );
-  } else if (cardKey === 'numeric:Date') {
-    const dc = dateConfig || {};
-    const dQuestion = dc.dateQuestion || "When's the best date for you?";
-    const dHelper = dc.dateHelperText || 'Pick a date from the calendar.';
-    const dRequired = !!dc.dateRequired;
-    const days = Array.from({ length: 31 }, (_, i) => i + 1);
-    const weekendIdx = new Set([4, 5, 11, 12, 18, 19, 25, 26]);
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label="Date" />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {dQuestion}
-              {dRequired && <span className="text-red-600 ml-1">*</span>}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          {dHelper && <p className="text-[#888] text-[15px] font-light mt-[1px] mb-[19px]">{dHelper}</p>}
-          <div className="border border-[rgba(0,0,0,0.12)] rounded-[10px] overflow-hidden mb-5">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-[rgba(0,0,0,0.07)]">
-              <span className="text-[13px] font-medium text-[#111]">May 2026</span>
-              <div className="flex gap-3">
-                <RiArrowLeftSLine size={16} className="text-[#888] cursor-pointer shrink-0" aria-hidden />
-                <RiArrowRightSLine size={16} className="text-[#888] cursor-pointer shrink-0" aria-hidden />
-              </div>
-            </div>
-            <div className="grid grid-cols-7 text-center px-4 py-3 gap-y-1">
-              {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((d) => (
-                <span key={d} className="text-[10px] text-[#888] pb-1">{d}</span>
-              ))}
-              {days.map((d) => (
-                <span
-                  key={d}
-                  className={`text-[13px] py-1 rounded-full ${d === 11 ? 'bg-[#111] text-white' : weekendIdx.has(d - 1) ? 'text-[#ccc]' : 'text-[#111] cursor-pointer hover:bg-[rgba(0,0,0,0.05)]'}`}
-                >
-                  {d}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  } else {
-    content = (
-      <>
-        <div className="flex flex-col px-14 pt-11 pb-5">
-          <SectionBadge num={blockNum} label={label} />
-          <div className="pt-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pb-5">
-            <p className="font-semibold text-[#111] tracking-[-0.52px] leading-[1.3] flex-1 min-w-0" style={{ fontSize: '32px', fontWeight: '600' }}>
-              {label}
-            </p>
-            <PreviewRequiredInline show={previewRequiredHint} />
-          </div>
-          <p className="text-[#888] text-[15px] font-light pb-5">
-            This is a {label.toLowerCase()} field for collecting respondent data.
-          </p>
-        </div>
-        {!isPreviewMode && <ContentCardFooter onDelete={onDelete} variant="field" />}
-      </>
-    );
-  }
-
-  const isImageCard = cardKey === 'buildingBlocks:Images';
-  const isVideoCard = cardKey === 'buildingBlocks:Video';
-  const isScrollableCard = isImageCard || isVideoCard;
-  const scrollableLabel = isImageCard ? 'IMAGE WITH QUESTION' : 'VIDEO WITH QUESTION';
-
-  const inCardPreviewNav = isPreviewMode && previewStepNav ? previewStepNav : null;
-
-  return (
-    <motion.div
-      className="h-full min-h-0 flex flex-col"
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.97 }}
-      transition={{ duration: 0.22, ease: 'easeOut' }}
-    >
-      {isScrollableCard ? (
-        <div className="flex-1 min-h-0 flex flex-col gap-[6px]">
-          <div className="flex gap-[14px] items-center pb-[8px] pt-[6px]">
-            <span className="text-[15px] font-semibold tracking-[1.52px] uppercase text-black whitespace-nowrap" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-              {scrollableLabel}
-            </span>
-            <div className="flex-1 h-px bg-[rgba(0,0,0,0.1)]" />
-          </div>
-          <CardShell fullCanvas={fullCanvas} cardColor={cardColor} cardImage={cardImage} scrollable footer={inCardPreviewNav}>{content}</CardShell>
-        </div>
-      ) : (
-        <CardShell fullCanvas={fullCanvas} cardColor={cardColor} cardImage={cardImage} footer={inCardPreviewNav}>{content}</CardShell>
-      )}
-    </motion.div>
-  );
-};
-
-/* ── Start screen appearance tokens ── */
-const WELCOME_TEXT_SIZE_DESKTOP = {
-  S: { title: '20px', titleLeading: '24px', desc: '13px' },
-  M: { title: '24px', titleLeading: '28.8px', desc: '15px' },
-  L: { title: '28px', titleLeading: '33.6px', desc: '17px' },
-};
-const WELCOME_TEXT_SIZE_MOBILE = {
-  S: { title: '24px', titleLeading: '28.8px', desc: '13px' },
-  M: { title: '28px', titleLeading: '33.6px', desc: '15px' },
-  L: { title: '32px', titleLeading: '38.4px', desc: '17px' },
-};
-
-/* ── Essentials → ContentCard block mapping (for intro screen) ── */
-const ESSENTIAL_TO_BLOCK = {
-  'CTA':         { section: 'buildingBlocks', label: 'CTA' },
-  'Heading':     { section: 'buildingBlocks', label: 'Heading' },
-  'Description': { section: 'buildingBlocks', label: 'Description' },
-  'Text Box':    { section: 'qualitative',    label: 'Short text' },
-  'Images':      { section: 'buildingBlocks', label: 'Images' },
-  'Video':       { section: 'buildingBlocks', label: 'Video' },
-  'Captcha':     { section: 'interactive',    label: 'Captcha' },
-};
-
-/* ── Screen list icon + color map (keyed by screen label) ── */
-const SCREEN_ICON_MAP = {
-  'CTA':               { Icon: BoxesIcon,      bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Heading':           { Icon: TextHIcon,         bg: 'bg-[#eef2ff]', color: 'text-indigo-500'  },
-  'Description':       { Icon: TextAlignLeftIcon,  bg: 'bg-[#eef2ff]', color: 'text-indigo-500'  },
-  'Images':            { Icon: ImagesCardIcon,    bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Video':             { Icon: VideoCardIcon,      bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Contact':           { Icon: RiIdCardLine,      bg: 'bg-[#eef2ff]', color: 'text-indigo-500'  },
-  'Address':           { Icon: RiMapPinLine,      bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Work Info':         { Icon: RiBriefcaseLine,   bg: 'bg-[#fff7ed]', color: 'text-orange-500'  },
-  'Short text':        { Icon: ShortTextIcon,    bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Long text':         { Icon: LongTextIcon,     bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Single':            { Icon: RiRadioButtonLine, bg: 'bg-[#fff2ee]', color: 'text-rose-500'    },
-  'Multiple':          { Icon: RiCheckboxLine,    bg: 'bg-[#fff7ed]', color: 'text-orange-500'  },
-  'Media':             { Icon: RiImageLine,       bg: 'bg-[#fff7ed]', color: 'text-orange-500'  },
-  'Maps':              { Icon: RiCompassLine,     bg: 'bg-[#ecfeff]', color: 'text-cyan-600'    },
-  'Captcha':           { Icon: RiRobot2Line,      bg: 'bg-[#f4f4f4]', color: 'text-gray-500'   },
-  'Multi-image upload':{ Icon: RiFileUploadLine,  bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Rating':            { Icon: RiStarLine,        bg: 'bg-[#eef2ff]', color: 'text-indigo-500'  },
-  'Upload':            { Icon: RiFileUploadLine,  bg: 'bg-[#f0fdf4]', color: 'text-emerald-600' },
-  'Date':              { Icon: RiCalendarLine,    bg: 'bg-[#eef2ff]', color: 'text-indigo-500'  },
-};
-
-/* ── Settings Toggle ── */
-const Toggle = ({ checked, onChange }) => (
-  <ToggleSwitch checked={checked} onChange={onChange} />
-);
-
-/* ── Form Builder Page ── */
 const FormBuilderPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const dispatch = useDispatch();
   const { showToast } = useToast();
-  const activeFormId = location.state?.formId ?? null;
+  const { activeFormId } = useFormBuilderRoute();
   const fromOnboarding = location.state?.fromOnboarding === true;
   const showOnboardingStepper = useSelector(selectIsOnboardingActive);
+  const persistedForm = useSelector((state) =>
+    activeFormId == null
+      ? null
+      : state.forms.forms.find((form) => String(form.id) === String(activeFormId)) ?? null
+  );
   const previewScreenValidatorRef = useRef(null);
+
+  useEffect(() => {
+    // Clear route loading bridge once the builder page mounts.
+    dispatch(finishBuilderRouteTransition());
+  }, [dispatch]);
+
   const [deviceView, setDeviceView] = useState('desktop');
   const [isPreview, setIsPreview] = useState(false);
   const [isPublishView, setIsPublishView] = useState(false);
@@ -4374,11 +1287,14 @@ const FormBuilderPage = () => {
   const previewVisitStackRef = useRef([]);
   const [previewSnapVersion, setPreviewSnapVersion] = useState(0);
   const logicStorageHydratedRef = useRef(false);
+  const logicMergeSessionRef = useRef(null);
   /** Hover on disconnect control highlights the corresponding edge in red */
   const [logicDisconnectHoveredKey, setLogicDisconnectHoveredKey] = useState(null);
   const [logicEdgeKindHoveredKey, setLogicEdgeKindHoveredKey] = useState(null);
   /** Measured card heights on the logic canvas (for vertically centered connector ports) */
   const [logicCardHeights, setLogicCardHeights] = useState({});
+  /** Measured port anchor centers in board space (from DOM) */
+  const [logicPortDomAnchors, setLogicPortDomAnchors] = useState({});
   /* -- Left panel: reorder content screens (between intro & end) -- */
   const contentScreensScrollRef = useRef(null);
   const prevContentScreensCountRef = useRef(0);
@@ -4421,8 +1337,10 @@ const FormBuilderPage = () => {
   const lastHydratedTemplateIdRef = useRef(null);
   const newFormHydratedRef = useRef(false);
   const builderDraftHydratedRef = useRef(false);
+  const builderHydrationSessionRef = useRef(null);
   const builderBaselineRef = useRef(null);
   const builderBaselineSessionRef = useRef(null);
+  const [builderHydrated, setBuilderHydrated] = useState(false);
   const formTouchedRef = useRef(false);
   const markFormTouched = () => {
     formTouchedRef.current = true;
@@ -4490,8 +1408,9 @@ const FormBuilderPage = () => {
   const [designCardColor, setDesignCardColor] = useState('#f9f9fa');
   const [designCardImage, setDesignCardImage] = useState(null);
   const [designCardColorGridOpen, setDesignCardColorGridOpen] = useState(false);
+  const [designTextColorGridOpen, setDesignTextColorGridOpen] = useState(false);
   const [designCardOpacity, setDesignCardOpacity] = useState(74);
-  const [designTextColor, setDesignTextColor] = useState('#198eea');
+  const [designTextColor, setDesignTextColor] = useState('#3d3d3d');
   const [designTypography, setDesignTypography] = useState('default');
 
   /* ── CTA configure panel state ── */
@@ -4706,25 +1625,6 @@ const FormBuilderPage = () => {
   ]);
   const [mediaSections, setMediaSections] = useState({ fieldSettings: true, options: true, conditionalLogic: false, appearance: true });
 
-  /* ── Map configure panel state ── */
-  const [showMapConfigPanel, setShowMapConfigPanel] = useState(false);
-  const [mapRequired, setMapRequired] = useState(false);
-  const [mapHidden, setMapHidden] = useState(false);
-  const [mapQuestion, setMapQuestion] = useState('Where is your office located?');
-  const [mapHelperText, setMapHelperText] = useState('Drag the pin to your location');
-  const [mapType, setMapType] = useState('roadmap');
-  const [mapZoom, setMapZoom] = useState(12);
-  const [mapDefaultLat, setMapDefaultLat] = useState(DEFAULT_MAP_CENTER.lat);
-  const [mapDefaultLng, setMapDefaultLng] = useState(DEFAULT_MAP_CENTER.lng);
-  const [mapDefaultAddress, setMapDefaultAddress] = useState(DEFAULT_MAP_CENTER.address);
-  const [mapAllowPinMovement, setMapAllowPinMovement] = useState(true);
-  const [mapShowSearchBar, setMapShowSearchBar] = useState(true);
-  const [mapRestrictRadius, setMapRestrictRadius] = useState(false);
-  const [mapRestrictRadiusKm, setMapRestrictRadiusKm] = useState(5);
-  const [mapPinLabel, setMapPinLabel] = useState('Your location');
-  const [mapHeight, setMapHeight] = useState('M');
-  const [mapSections, setMapSections] = useState({ fieldSettings: true, appearance: true, conditionalLogic: false });
-
   /* ── Captcha configure panel state ── */
   const [showCaptchaConfigPanel, setShowCaptchaConfigPanel] = useState(false);
   const [captchaEnabled, setCaptchaEnabled] = useState(true);
@@ -4831,45 +1731,10 @@ const FormBuilderPage = () => {
     markFormTouched();
     setShowContentPanel(false);
     closePanelsRef.current();
-    if (itemLabel === 'CTA') {
-      setShowCtaConfigPanel(true);
-    } else if (itemLabel === 'Heading') {
-      setShowHeadingConfigPanel(true);
-    } else if (itemLabel === 'Description') {
-      setShowDescriptionConfigPanel(true);
-    } else if (itemLabel === 'Images') {
-      setShowImageConfigPanel(true);
-    } else if (itemLabel === 'Video') {
-      setShowVideoConfigPanel(true);
-    } else if (itemLabel === 'Contact') {
-      setShowContactConfigPanel(true);
-    } else if (itemLabel === 'Address') {
-      setShowAddressConfigPanel(true);
-    } else if (itemLabel === 'Work Info') {
-      setShowWorkConfigPanel(true);
-    } else if (itemLabel === 'Short text') {
-      setShowShortTextConfigPanel(true);
-    } else if (itemLabel === 'Long text') {
-      setShowLongTextConfigPanel(true);
-    } else if (itemLabel === 'Single') {
-      setShowSingleConfigPanel(true);
-    } else if (itemLabel === 'Multiple') {
-      setShowMultipleConfigPanel(true);
-    } else if (itemLabel === 'Media') {
-      setShowMediaConfigPanel(true);
-    } else if (itemLabel === 'Maps') {
-      setShowMapConfigPanel(true);
-    } else if (itemLabel === 'Captcha') {
-      setShowCaptchaConfigPanel(true);
-    } else if (itemLabel === 'Multi-image upload' || itemLabel === 'Upload') {
-      setShowMultiImageConfigPanel(true);
-    } else if (itemLabel === 'Rating') {
-      setShowRatingConfigPanel(true);
-    } else if (itemLabel === 'Date') {
-      setShowDateConfigPanel(true);
-    } else if (itemLabel === 'Time') {
-      setShowTimeConfigPanel(true);
-    }
+    if (panelTimerRef.current) clearTimeout(panelTimerRef.current);
+    panelTimerRef.current = setTimeout(() => {
+      openConfigurePanelForLabel(itemLabel);
+    }, PANEL_SWITCH_DELAY_MS);
   };
 
   const removeContentScreen = (screenId) => {
@@ -5055,7 +1920,7 @@ const FormBuilderPage = () => {
     let bestD = snapR;
     logicPortPositionsRef.current.forEach((pos, id) => {
       if (id === fromId || pos.inX == null || pos.kind === 'intro') return;
-      const d = Math.hypot(bx - pos.inX, by - pos.portY);
+      const d = Math.hypot(bx - pos.inX, by - (pos.inY ?? pos.portY));
       if (d < bestD) {
         bestD = d;
         bestId = id;
@@ -5115,12 +1980,12 @@ const FormBuilderPage = () => {
       buildLogicQuestionOptions({
         screens,
         getQuestionText: (screen) =>
-          getScreenPreviewText(screen, fieldPreviewFallbackRef.current),
+          getBuilderScreenPreviewText(screen, fieldPreviewFallbackRef.current, activeScreenId),
         welcomeInputType,
         welcomeHidden,
         introTitle: introTitleRef.current,
       }),
-    [screens, welcomeInputType, welcomeHidden, logicQuestionOptionsTick]
+    [screens, welcomeInputType, welcomeHidden, logicQuestionOptionsTick, activeScreenId]
   );
 
   const getLogicFieldOptionsForScreen = useCallback(
@@ -5195,7 +2060,7 @@ const FormBuilderPage = () => {
         return {
           rules: [
             {
-              ...createEmptyRule(questionOptions),
+              ...createEmptyRule(questionOptions, fromScreenId),
               thenScreenId: targetTo,
             },
           ],
@@ -5458,7 +2323,7 @@ const FormBuilderPage = () => {
       requestAnimationFrame(() => {
         const meta = logicPortPositionsRef.current.get(fromId);
         if (!meta?.outX) return;
-        const payload = { fromId, x1: meta.outX, y1: meta.portY, kind };
+        const payload = { fromId, x1: meta.outX, y1: meta.outY ?? meta.portY, kind };
         logicConnectGestureRef.current = payload;
         setLogicConnectDrag(payload);
 
@@ -5716,7 +2581,6 @@ const FormBuilderPage = () => {
     setShowSingleConfigPanel(false);
     setShowMultipleConfigPanel(false);
     setShowMediaConfigPanel(false);
-    setShowMapConfigPanel(false);
     setShowCaptchaConfigPanel(false);
     setShowMultiImageConfigPanel(false);
     setShowRatingConfigPanel(false);
@@ -5749,13 +2613,38 @@ const FormBuilderPage = () => {
     else if (name === 'singleConfig') setShowSingleConfigPanel(true);
     else if (name === 'multipleConfig') setShowMultipleConfigPanel(true);
     else if (name === 'mediaConfig') setShowMediaConfigPanel(true);
-    else if (name === 'mapConfig') setShowMapConfigPanel(true);
     else if (name === 'captchaConfig') setShowCaptchaConfigPanel(true);
     else if (name === 'multiImageConfig') setShowMultiImageConfigPanel(true);
     else if (name === 'ratingConfig') setShowRatingConfigPanel(true);
     else if (name === 'dateConfig') setShowDateConfigPanel(true);
     else if (name === 'timeConfig') setShowTimeConfigPanel(true);
     else if (name === 'designPanel') setShowDesignPanel(true);
+  };
+
+  const openConfigurePanelForLabel = (itemLabel) => {
+    const LABEL_TO_PANEL = {
+      CTA: 'ctaConfig',
+      Heading: 'headingConfig',
+      Description: 'descriptionConfig',
+      Images: 'imageConfig',
+      Video: 'videoConfig',
+      Contact: 'contactConfig',
+      Address: 'addressConfig',
+      'Work Info': 'workConfig',
+      'Short text': 'shortTextConfig',
+      'Long text': 'longTextConfig',
+      Single: 'singleConfig',
+      Multiple: 'multipleConfig',
+      Media: 'mediaConfig',
+      Captcha: 'captchaConfig',
+      'Multi-image upload': 'multiImageConfig',
+      Upload: 'multiImageConfig',
+      Rating: 'ratingConfig',
+      Date: 'dateConfig',
+      Time: 'timeConfig',
+    };
+    const panel = LABEL_TO_PANEL[itemLabel];
+    if (panel) openPanelByName(panel);
   };
 
   /* Close one panel, then open another after the exit animation finishes */
@@ -5836,6 +2725,29 @@ const FormBuilderPage = () => {
 
   const hasScreens = screens.length > 0;
   const activeScreen = screens.find((s) => s.id === activeScreenId) ?? null;
+
+  const handleIntroEssentialSelect = useCallback(
+    (label) => {
+      const currentScreen = screens.find((s) => s.id === activeScreenId);
+      if (currentScreen?.type !== 'intro') {
+        showToast({ type: 'info', message: 'Switch to the Start screen to edit essentials.' });
+        return;
+      }
+      setIntroEssential((prev) => {
+        const next = prev === label ? null : label;
+        if (next != null) {
+          closeAllRightPanels();
+          setTimeout(() => {
+            const panel = builderScreenMaps.ESSENTIAL_LABEL_TO_CONFIG_PANEL[label];
+            if (panel) openPanelByName(panel);
+          }, 300);
+        }
+        return next;
+      });
+    },
+    [screens, activeScreenId, showToast],
+  );
+
   const configureIsUpload = activeScreen?.label === 'Upload';
   const configureMaxFileSize = configureIsUpload ? uploadMaxFileSize : multiImageMaxFileSize;
   const setConfigureMaxFileSize = configureIsUpload ? setUploadMaxFileSize : setMultiImageMaxFileSize;
@@ -5856,9 +2768,9 @@ const FormBuilderPage = () => {
       welcomeHidden,
       introTitle: introTitleRef.current,
       getQuestionText: (screen) =>
-        getScreenPreviewText(screen, fieldPreviewFallbackRef.current),
+        getBuilderScreenPreviewText(screen, fieldPreviewFallbackRef.current, activeScreenId),
     }),
-    [screens, contentScreens, welcomeInputType, welcomeHidden, logicQuestionOptionsTick]
+    [screens, contentScreens, welcomeInputType, welcomeHidden, logicQuestionOptionsTick, activeScreenId]
   );
 
   const applyAiLogicToBuilder = useCallback(
@@ -5890,7 +2802,9 @@ const FormBuilderPage = () => {
   const aiLogicGenerationFailed = aiLogicGen.status === AI_LOGIC_GEN_STATUS.failed;
   const aiLogicGenerating = aiLogicGen.status === AI_LOGIC_GEN_STATUS.generating;
   const aiLogicReady = aiLogicGen.status === AI_LOGIC_GEN_STATUS.success;
-  const showLogicCanvas = logicModeManual || aiLogicReady;
+  const hasLogicOnCanvas =
+    logicConnections.length > 0 || Object.keys(logicIfRulesByEdge).length > 0;
+  const showLogicCanvas = logicModeManual || aiLogicReady || hasLogicOnCanvas;
   const openLogicCanvasIntegrations = useCallback(() => setActiveTab('settings'), []);
   const openLogicCanvasWebhook = useCallback(() => setActiveTab('settings'), []);
   /** Design: only after Add screen creates the form shell */
@@ -5949,6 +2863,8 @@ const FormBuilderPage = () => {
     longTextSize,
     longTextRequired,
     longTextHidden,
+    longTextResponseQualityEnabled: responseQualityEnabled,
+    longTextResponseQualityOptions: responseQualityOptions,
     singleQuestion,
     singleHelperText,
     singleOptions,
@@ -6052,21 +2968,6 @@ const FormBuilderPage = () => {
     videoWidth,
     videoAspectRatio,
     videoCornerRadius,
-    mapQuestion,
-    mapHelperText,
-    mapType,
-    mapZoom,
-    mapDefaultLat,
-    mapDefaultLng,
-    mapDefaultAddress,
-    mapAllowPinMovement,
-    mapShowSearchBar,
-    mapRestrictRadius,
-    mapRestrictRadiusKm,
-    mapPinLabel,
-    mapHeight,
-    mapRequired,
-    mapHidden,
     mediaQuestion,
     mediaHelperText,
     mediaOptions,
@@ -6093,9 +2994,9 @@ const FormBuilderPage = () => {
     showIfConditions,
   };
 
-  const serializeBuilderState = () => {
+  const getScreensSnapshot = useCallback(() => {
     const globals = configGlobalsRef.current;
-    const screensSnapshot = screens.map((s) => {
+    return screens.map((s) => {
       if (s.type !== 'content') {
         return {
           id: s.id,
@@ -6115,9 +3016,69 @@ const FormBuilderPage = () => {
         name: s.name,
         label: s.label,
         section: s.section,
-        config,
+        config: s.id === activeScreenId && config ? { ...config, showIfConditions } : config,
       };
     });
+  }, [activeScreenId, screens, showIfConditions]);
+
+  const buildBuilderThemeSnapshot = useCallback(
+    () => ({
+      activeThemeId,
+      layoutStyle: designLayoutStyle,
+      background: designBackground,
+      cardColor: designCardColor,
+      cardImage: designCardImage,
+      cardOpacity: designCardOpacity,
+      textColor: designTextColor,
+      typography: designTypography,
+    }),
+    [
+      activeThemeId,
+      designLayoutStyle,
+      designBackground,
+      designCardColor,
+      designCardImage,
+      designCardOpacity,
+      designTextColor,
+      designTypography,
+    ]
+  );
+
+  const buildBuilderSettingsSnapshot = useCallback(
+    () => ({
+      oneAtATime: settingsOneAtATime,
+      autoAdvance: settingsAutoAdvance,
+      backButton: settingsBackButton,
+      completionAction: settingsCompletionAction,
+      resubmission: settingsResubmission,
+      confirmationEmail: settingsConfirmationEmail,
+      submissionNotifications: settingsSubmissionNotifications,
+      emailCollection: settingsEmailCollection,
+      language: settingsLanguage,
+      passwordProtection: settingsPasswordProtection,
+      responseLimit: settingsResponseLimit,
+      responseLimitCount: settingsResponseLimitCount,
+      webhook: settingsWebhook,
+    }),
+    [
+      settingsOneAtATime,
+      settingsAutoAdvance,
+      settingsBackButton,
+      settingsCompletionAction,
+      settingsResubmission,
+      settingsConfirmationEmail,
+      settingsSubmissionNotifications,
+      settingsEmailCollection,
+      settingsLanguage,
+      settingsPasswordProtection,
+      settingsResponseLimit,
+      settingsResponseLimitCount,
+      settingsWebhook,
+    ]
+  );
+
+  const serializeBuilderState = () => {
+    const screensSnapshot = getScreensSnapshot();
     return JSON.stringify({
       screens: screensSnapshot,
       intro: {
@@ -6134,6 +3095,8 @@ const FormBuilderPage = () => {
       },
       logicConnections,
       logicIfRulesByEdge,
+      theme: buildBuilderThemeSnapshot(),
+      settings: buildBuilderSettingsSnapshot(),
     });
   };
 
@@ -6146,7 +3109,7 @@ const FormBuilderPage = () => {
       setIsFormDirty(false);
       return;
     }
-    const sessionKey = `${location.key}|${location.state?.formId ?? 'new'}|${location.state?.templateId ?? ''}`;
+    const sessionKey = `${location.key}|${activeFormId ?? 'new'}|${location.state?.templateId ?? ''}`;
     if (builderBaselineSessionRef.current === sessionKey) return;
 
     builderBaselineSessionRef.current = sessionKey;
@@ -6165,7 +3128,7 @@ const FormBuilderPage = () => {
       cancelAnimationFrame(outerFrame);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- capture once per session after paint settles
-  }, [screens.length, location.key, location.state?.formId, location.state?.templateId]);
+  }, [screens.length, location.key, activeFormId, location.state?.templateId]);
 
   useLayoutEffect(() => {
     if (!builderBaselineRef.current || screens.length === 0) {
@@ -6222,6 +3185,8 @@ const FormBuilderPage = () => {
       setLongTextSize,
       setLongTextRequired,
       setLongTextHidden,
+      setLongTextResponseQualityEnabled: setResponseQualityEnabled,
+      setLongTextResponseQualityOptions: setResponseQualityOptions,
       setSingleQuestion,
       setSingleHelperText,
       setSingleOptions,
@@ -6325,21 +3290,6 @@ const FormBuilderPage = () => {
       setVideoWidth,
       setVideoAspectRatio,
       setVideoCornerRadius,
-      setMapQuestion,
-      setMapHelperText,
-      setMapType,
-      setMapZoom,
-      setMapDefaultLat,
-      setMapDefaultLng,
-      setMapDefaultAddress,
-      setMapAllowPinMovement,
-      setMapShowSearchBar,
-      setMapRestrictRadius,
-      setMapRestrictRadiusKm,
-      setMapPinLabel,
-      setMapHeight,
-      setMapRequired,
-      setMapHidden,
       setMediaQuestion,
       setMediaHelperText,
       setMediaOptions,
@@ -6381,6 +3331,20 @@ const FormBuilderPage = () => {
     });
   }, [showIfConditions]);
 
+  const handleSaveShortTextResponseQuality = useCallback(() => {
+    if (activeScreenId == null) return;
+    persistScreenConfigById(activeScreenId);
+    markFormTouched();
+    showToast({ type: 'success', message: 'Response quality settings saved.' });
+  }, [activeScreenId, persistScreenConfigById, showToast]);
+
+  const handleSaveLongTextResponseQuality = useCallback(() => {
+    if (activeScreenId == null) return;
+    persistScreenConfigById(activeScreenId);
+    markFormTouched();
+    showToast({ type: 'success', message: 'Response quality settings saved.' });
+  }, [activeScreenId, persistScreenConfigById, showToast]);
+
   useEffect(() => {
     const formTitle = location.state?.formTitle;
     if (formTitle && !newFormHydratedRef.current && !location.state?.templateId) {
@@ -6410,6 +3374,33 @@ const FormBuilderPage = () => {
     setDraftEndTitle(built.end.title);
     setDraftEndDescription(built.end.description);
     setDraftEndButtonText(built.end.buttonText);
+    if (built.theme && typeof built.theme === 'object') {
+      if (built.theme.activeThemeId) setActiveThemeId(built.theme.activeThemeId);
+      if (built.theme.layoutStyle) setDesignLayoutStyle(built.theme.layoutStyle);
+      if (built.theme.background) setDesignBackground(built.theme.background);
+      if (built.theme.cardColor) setDesignCardColor(built.theme.cardColor);
+      if (Object.prototype.hasOwnProperty.call(built.theme, 'cardImage')) {
+        setDesignCardImage(built.theme.cardImage);
+      }
+      if (typeof built.theme.cardOpacity === 'number') setDesignCardOpacity(built.theme.cardOpacity);
+      if (built.theme.textColor) setDesignTextColor(built.theme.textColor);
+      if (built.theme.typography) setDesignTypography(built.theme.typography);
+    }
+    if (built.settings && typeof built.settings === 'object') {
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'oneAtATime')) setSettingsOneAtATime(Boolean(built.settings.oneAtATime));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'autoAdvance')) setSettingsAutoAdvance(Boolean(built.settings.autoAdvance));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'backButton')) setSettingsBackButton(Boolean(built.settings.backButton));
+      if (built.settings.completionAction) setSettingsCompletionAction(built.settings.completionAction);
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'resubmission')) setSettingsResubmission(Boolean(built.settings.resubmission));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'confirmationEmail')) setSettingsConfirmationEmail(Boolean(built.settings.confirmationEmail));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'submissionNotifications')) setSettingsSubmissionNotifications(Boolean(built.settings.submissionNotifications));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'emailCollection')) setSettingsEmailCollection(Boolean(built.settings.emailCollection));
+      if (built.settings.language) setSettingsLanguage(built.settings.language);
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'passwordProtection')) setSettingsPasswordProtection(Boolean(built.settings.passwordProtection));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'responseLimit')) setSettingsResponseLimit(Boolean(built.settings.responseLimit));
+      if (built.settings.responseLimitCount != null) setSettingsResponseLimitCount(String(built.settings.responseLimitCount));
+      if (Object.prototype.hasOwnProperty.call(built.settings, 'webhook')) setSettingsWebhook(Boolean(built.settings.webhook));
+    }
     setIntroEssential(null);
     setActiveScreenId(built.screens[0]?.id ?? null);
     closeAllRightPanels();
@@ -6419,14 +3410,25 @@ const FormBuilderPage = () => {
 
   useEffect(() => {
     builderDraftHydratedRef.current = false;
+    builderHydrationSessionRef.current = null;
     lastHydratedTemplateIdRef.current = null;
     newFormHydratedRef.current = false;
     autoPreviewAppliedRef.current = false;
     builderBaselineRef.current = null;
     builderBaselineSessionRef.current = null;
     formTouchedRef.current = false;
+    setBuilderHydrated(false);
     setIsPublishView(location.state?.startInPublishView === true);
-  }, [location.state?.formId, location.key, location.state?.startInPublishView]);
+  }, [activeFormId, location.key, location.state?.startInPublishView]);
+
+  useEffect(() => {
+    if (!location.state?.startInPublishView || !isPublishView) return;
+    if (screens.length === 0) return;
+    if (!canPublishForm(screens)) {
+      setIsPublishView(false);
+      showToast({ type: 'info', message: getPublishBlockers(screens)[0] });
+    }
+  }, [location.state?.startInPublishView, isPublishView, screens, showToast]);
 
   useEffect(() => {
     if (!location.state?.startInPreview || autoPreviewAppliedRef.current) return;
@@ -6436,46 +3438,128 @@ const FormBuilderPage = () => {
   }, [location.state?.startInPreview, screens.length, location.key]);
 
   useEffect(() => {
-    const formId = location.state?.formId;
-    const templateId = location.state?.templateId;
+    const formId = activeFormId;
+    const savedSnapshot =
+      isUsableBuilderSnapshot(persistedForm?.builderSnapshot)
+        ? persistedForm.builderSnapshot
+        : null;
+    const draftSnapshot = formId ? readBuilderDraft(formId) : null;
+    const publishedSnapshot = formId ? readPublishedForm(formId) : null;
+    const fallbackSnapshot = savedSnapshot ? null : newestBuilderSnapshot(draftSnapshot, publishedSnapshot);
+    const templateId =
+      savedSnapshot?.templateId ??
+      fallbackSnapshot?.templateId ??
+      location.state?.templateId ??
+      persistedForm?.templateId;
+    const hydrationSource = savedSnapshot
+      ? 'snapshot'
+      : fallbackSnapshot
+        ? 'fallback-snapshot'
+        : persistedForm
+          ? 'form'
+          : 'pending';
+    const hydrationSessionKey = `${location.key}|${formId ?? 'new'}|${templateId ?? ''}|${hydrationSource}`;
 
-    if (formId) {
-      const draft = readBuilderDraft(formId);
-      if (draft?.screens?.length) {
-        builderDraftHydratedRef.current = true;
-        applyBuiltFormState(
-          {
-            screens: draft.screens,
-            formTitle: draft.formTitle ?? location.state?.formTitle ?? 'Untitled Form',
-            intro: draft.intro ?? {
-              title: 'Title',
-              description: '',
-              buttonText: 'Start',
-            },
-            end: draft.end ?? {
-              title: 'Thanks for your response!',
-              description: '',
-              buttonText: 'Done',
-            },
-            nextId: draft.nextId ?? 100,
+    if (builderHydrationSessionRef.current === hydrationSessionKey) return;
+    builderHydrationSessionRef.current = hydrationSessionKey;
+
+    if (formId && savedSnapshot) {
+      builderDraftHydratedRef.current = true;
+      applyBuiltFormState(
+        {
+          screens: savedSnapshot.screens,
+          formTitle: savedSnapshot.formTitle ?? persistedForm?.title ?? location.state?.formTitle ?? 'Untitled Form',
+          intro: savedSnapshot.intro ?? {
+            title: 'Title',
+            description: '',
+            buttonText: 'Start',
           },
-          draft.templateId ?? templateId
-        );
-        if (Array.isArray(draft.logicConnections)) {
-          setLogicConnections(draft.logicConnections);
+          end: savedSnapshot.end ?? {
+            title: 'Thanks for your response!',
+            description: '',
+            buttonText: 'Done',
+          },
+          nextId: savedSnapshot.nextId ?? 100,
+          theme: savedSnapshot.theme,
+          settings: savedSnapshot.settings,
+        },
+        templateId
+      );
+      setLogicConnections(Array.isArray(savedSnapshot.logicConnections) ? savedSnapshot.logicConnections : []);
+      setLogicIfRulesByEdge(
+        savedSnapshot.logicIfRulesByEdge && typeof savedSnapshot.logicIfRulesByEdge === 'object'
+          ? savedSnapshot.logicIfRulesByEdge
+          : {}
+      );
+      if (savedSnapshot.logicMeta && typeof savedSnapshot.logicMeta === 'object') {
+        if (typeof savedSnapshot.logicMeta.logicModeManual === 'boolean') {
+          setLogicModeManual(savedSnapshot.logicMeta.logicModeManual);
         }
-        if (draft.logicIfRulesByEdge && typeof draft.logicIfRulesByEdge === 'object') {
-          setLogicIfRulesByEdge(draft.logicIfRulesByEdge);
+        if (savedSnapshot.logicMeta.logicCardOffsets && typeof savedSnapshot.logicMeta.logicCardOffsets === 'object') {
+          setLogicCardOffsets(savedSnapshot.logicMeta.logicCardOffsets);
         }
-        setLogicElseByScreen({});
-        setLogicCardOffsets({});
-        return;
+        if (savedSnapshot.logicMeta.aiLogicGenStatus === AI_LOGIC_GEN_STATUS.success) {
+          setAiLogicGen({ status: AI_LOGIC_GEN_STATUS.success, errorMessage: '' });
+        }
       }
+      setLogicElseByScreen({});
+      if (!savedSnapshot.logicMeta?.logicCardOffsets) setLogicCardOffsets({});
+      setBuilderHydrated(true);
+      return;
+    }
+
+    if (formId && fallbackSnapshot) {
+      builderDraftHydratedRef.current = true;
+      applyBuiltFormState(
+        {
+          screens: fallbackSnapshot.screens,
+          formTitle: fallbackSnapshot.formTitle ?? persistedForm?.title ?? location.state?.formTitle ?? 'Untitled Form',
+          intro: fallbackSnapshot.intro ?? {
+            title: 'Title',
+            description: '',
+            buttonText: 'Start',
+          },
+          end: fallbackSnapshot.end ?? {
+            title: 'Thanks for your response!',
+            description: '',
+            buttonText: 'Done',
+          },
+          nextId: fallbackSnapshot.nextId ?? 100,
+          theme: fallbackSnapshot.theme,
+          settings: fallbackSnapshot.settings,
+        },
+        fallbackSnapshot.templateId ?? templateId
+      );
+      if (Array.isArray(fallbackSnapshot.logicConnections)) {
+        setLogicConnections(fallbackSnapshot.logicConnections);
+      }
+      if (fallbackSnapshot.logicIfRulesByEdge && typeof fallbackSnapshot.logicIfRulesByEdge === 'object') {
+        setLogicIfRulesByEdge(fallbackSnapshot.logicIfRulesByEdge);
+      }
+      if (fallbackSnapshot.logicMeta && typeof fallbackSnapshot.logicMeta === 'object') {
+        if (typeof fallbackSnapshot.logicMeta.logicModeManual === 'boolean') {
+          setLogicModeManual(fallbackSnapshot.logicMeta.logicModeManual);
+        }
+        if (fallbackSnapshot.logicMeta.logicCardOffsets && typeof fallbackSnapshot.logicMeta.logicCardOffsets === 'object') {
+          setLogicCardOffsets(fallbackSnapshot.logicMeta.logicCardOffsets);
+        }
+        if (fallbackSnapshot.logicMeta.aiLogicGenStatus === AI_LOGIC_GEN_STATUS.success) {
+          setAiLogicGen({ status: AI_LOGIC_GEN_STATUS.success, errorMessage: '' });
+        }
+      }
+      setLogicElseByScreen({});
+      if (!fallbackSnapshot.logicMeta?.logicCardOffsets) setLogicCardOffsets({});
+      dispatch(updateForm({ id: formId, changes: { builderSnapshot: fallbackSnapshot } }));
+      setBuilderHydrated(true);
+      return;
     }
 
     if (templateId) {
       const built = buildFormFromTemplate(templateId);
-      if (!built) return;
+      if (!built) {
+        setBuilderHydrated(true);
+        return;
+      }
 
       setLogicConnections([]);
       setLogicIfRulesByEdge({});
@@ -6488,18 +3572,22 @@ const FormBuilderPage = () => {
         },
         templateId
       );
+      setBuilderHydrated(true);
       return;
     }
 
-    if (location.state?.formTitle) {
+    if (persistedForm?.title || location.state?.formTitle) {
       newFormHydratedRef.current = true;
-      setLoadedFormTitle(location.state.formTitle);
+      setLoadedFormTitle(persistedForm?.title ?? location.state?.formTitle);
     }
+    setBuilderHydrated(true);
   }, [
-    location.state?.formId,
+    activeFormId,
     location.state?.templateId,
     location.state?.formTitle,
     location.key,
+    persistedForm,
+    dispatch,
     applyBuiltFormState,
   ]);
 
@@ -6539,7 +3627,6 @@ const FormBuilderPage = () => {
       Time: timeQuestion,
       Images: imageQuestion,
       Video: videoQuestion,
-      Maps: mapQuestion,
       'Multi-image upload': multiImageQuestion,
       Heading: headingText || 'Add a heading',
       Description: descriptionContent || 'Add a description',
@@ -6558,7 +3645,6 @@ const FormBuilderPage = () => {
       ratingLowLabel,
       imageQuestion,
       videoQuestion,
-      mapQuestion,
       multiImageQuestion,
       headingText,
       descriptionContent,
@@ -6577,14 +3663,14 @@ const FormBuilderPage = () => {
     (screen) => {
       if (!screen) return 'Screen';
       if (screen.type === 'intro') {
-        return introTitle?.trim() || getScreenPreviewText(screen, fieldPreviewFallback) || 'Start Screen';
+        return introTitle?.trim() || getBuilderScreenPreviewText(screen, fieldPreviewFallback, activeScreenId) || 'Start Screen';
       }
       if (screen.type === 'end') {
-        return endScreenTitle?.trim() || getScreenPreviewText(screen, fieldPreviewFallback) || 'End Screen';
+        return endScreenTitle?.trim() || getBuilderScreenPreviewText(screen, fieldPreviewFallback, activeScreenId) || 'End Screen';
       }
-      return getScreenPreviewText(screen, fieldPreviewFallback) || screen.name || screen.label || 'Screen';
+      return getBuilderScreenPreviewText(screen, fieldPreviewFallback, activeScreenId) || screen.name || screen.label || 'Screen';
     },
-    [fieldPreviewFallback, introTitle, endScreenTitle]
+    [fieldPreviewFallback, introTitle, endScreenTitle, activeScreenId]
   );
 
   const requestDeleteScreen = useCallback(
@@ -6608,64 +3694,103 @@ const FormBuilderPage = () => {
   }, [pendingScreenDelete, removeContentScreen, performDeleteIntroScreen, performDeleteEndScreen]);
 
   useEffect(() => {
-    if (builderDraftHydratedRef.current) {
-      logicStorageHydratedRef.current = true;
-      return;
-    }
+    if (!builderHydrated || activeFormId == null) return;
+    const sessionKey = String(activeFormId);
+    if (logicMergeSessionRef.current === sessionKey) return;
+
+    const hasSnapshotLogic =
+      logicConnections.length > 0 || Object.keys(logicIfRulesByEdge).length > 0;
 
     try {
-      const raw = localStorage.getItem(LOGIC_STORAGE_KEY);
-      if (!raw) {
-        logicStorageHydratedRef.current = true;
-        return;
+      const raw = localStorage.getItem(logicStorageKeyForForm(activeFormId));
+      if (raw) {
+        const data = JSON.parse(raw);
+        const storedHasLogic =
+          (Array.isArray(data.logicConnections) && data.logicConnections.length > 0) ||
+          (data.logicIfRulesByEdge && Object.keys(data.logicIfRulesByEdge).length > 0);
+
+        if (!hasSnapshotLogic && storedHasLogic) {
+          if (Array.isArray(data.logicConnections)) {
+            setLogicConnections(data.logicConnections);
+          }
+          let byEdge = {};
+          let legacyElse = {};
+          if (data.logicIfRulesByEdge && typeof data.logicIfRulesByEdge === 'object') {
+            byEdge = data.logicIfRulesByEdge;
+          } else if (data.logicIfRulesByScreen && typeof data.logicIfRulesByScreen === 'object') {
+            const migrated = migrateLogicIfRulesToEdges(data.logicIfRulesByScreen);
+            byEdge = migrated.byEdge;
+            legacyElse = migrated.elseByScreen;
+          }
+          if (data.logicElseByScreen && typeof data.logicElseByScreen === 'object') {
+            legacyElse = { ...legacyElse, ...data.logicElseByScreen };
+          }
+          setLogicIfRulesByEdge(mergeLegacyElseIntoEdges(byEdge, legacyElse));
+        }
+
+        if (data.logicMeta && typeof data.logicMeta === 'object') {
+          if (typeof data.logicMeta.logicModeManual === 'boolean') {
+            setLogicModeManual(data.logicMeta.logicModeManual);
+          }
+          if (data.logicMeta.logicCardOffsets && typeof data.logicMeta.logicCardOffsets === 'object') {
+            setLogicCardOffsets(data.logicMeta.logicCardOffsets);
+          }
+          if (data.logicMeta.aiLogicGenStatus === AI_LOGIC_GEN_STATUS.success) {
+            setAiLogicGen({ status: AI_LOGIC_GEN_STATUS.success, errorMessage: '' });
+          }
+        }
       }
-      const data = JSON.parse(raw);
-      if (Array.isArray(data.logicConnections)) {
-        setLogicConnections(data.logicConnections);
-      }
-      let byEdge = {};
-      let legacyElse = {};
-      if (data.logicIfRulesByEdge && typeof data.logicIfRulesByEdge === 'object') {
-        byEdge = data.logicIfRulesByEdge;
-      } else if (data.logicIfRulesByScreen && typeof data.logicIfRulesByScreen === 'object') {
-        const migrated = migrateLogicIfRulesToEdges(data.logicIfRulesByScreen);
-        byEdge = migrated.byEdge;
-        legacyElse = migrated.elseByScreen;
-      }
-      if (data.logicElseByScreen && typeof data.logicElseByScreen === 'object') {
-        legacyElse = { ...legacyElse, ...data.logicElseByScreen };
-      }
-      setLogicIfRulesByEdge(mergeLegacyElseIntoEdges(byEdge, legacyElse));
-      setLogicElseByScreen({});
     } catch {
       /* ignore corrupt storage */
     }
+
+    logicMergeSessionRef.current = sessionKey;
     logicStorageHydratedRef.current = true;
-  }, [location.state?.formId, location.key]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- merge once per form after hydration
+  }, [builderHydrated, activeFormId]);
 
   useEffect(() => {
-    if (!logicStorageHydratedRef.current) return;
+    logicMergeSessionRef.current = null;
+    logicStorageHydratedRef.current = false;
+  }, [activeFormId]);
+
+  useEffect(() => {
+    if (!logicStorageHydratedRef.current || !builderHydrated || activeFormId == null) return;
     try {
       localStorage.setItem(
-        LOGIC_STORAGE_KEY,
+        logicStorageKeyForForm(activeFormId),
         JSON.stringify({
           logicConnections,
           logicIfRulesByEdge,
+          logicMeta: buildLogicMeta({
+            logicModeManual,
+            logicCardOffsets,
+            aiLogicGenStatus: aiLogicGen.status,
+          }),
+          savedAt: Date.now(),
         })
       );
     } catch {
       /* quota / private mode */
     }
-  }, [logicConnections, logicIfRulesByEdge]);
+  }, [
+    activeFormId,
+    builderHydrated,
+    logicConnections,
+    logicIfRulesByEdge,
+    logicModeManual,
+    logicCardOffsets,
+    aiLogicGen.status,
+  ]);
 
   useEffect(() => {
-    if (!activeFormId || screens.length === 0) return undefined;
+    if (!builderHydrated || !activeFormId || screens.length === 0) return undefined;
     const timer = setTimeout(() => {
-      writeBuilderDraft(activeFormId, {
+      const snapshot = buildPublishSnapshot({
         formId: activeFormId,
         templateId: location.state?.templateId ?? lastHydratedTemplateIdRef.current,
-        formTitle: loadedFormTitle ?? location.state?.formTitle ?? 'Untitled Form',
-        screens,
+        formTitle: loadedFormTitle ?? location.state?.formTitle ?? persistedForm?.title ?? 'Untitled Form',
+        screens: getScreensSnapshot(),
         nextId: nextIdRef.current,
         intro: {
           title: introTitle,
@@ -6681,13 +3806,34 @@ const FormBuilderPage = () => {
         },
         logicConnections,
         logicIfRulesByEdge,
+        logicMeta: buildLogicMeta({
+          logicModeManual,
+          logicCardOffsets,
+          aiLogicGenStatus: aiLogicGen.status,
+        }),
+        theme: buildBuilderThemeSnapshot(),
+        settings: buildBuilderSettingsSnapshot(),
       });
+      writeBuilderDraft(activeFormId, snapshot);
+      dispatch(
+        updateForm({
+          id: activeFormId,
+          changes: {
+            title: snapshot.formTitle,
+            templateId: snapshot.templateId,
+            builderSnapshot: snapshot,
+            timeAgo: 'just now',
+          },
+        })
+      );
     }, 1000);
     return () => clearTimeout(timer);
   }, [
+    builderHydrated,
     activeFormId,
     screens,
     loadedFormTitle,
+    persistedForm?.title,
     introTitle,
     introDescription,
     introButtonText,
@@ -6698,8 +3844,15 @@ const FormBuilderPage = () => {
     endScreenButtonText,
     logicConnections,
     logicIfRulesByEdge,
+    logicModeManual,
+    logicCardOffsets,
+    aiLogicGen.status,
     location.state?.templateId,
     location.state?.formTitle,
+    getScreensSnapshot,
+    buildBuilderThemeSnapshot,
+    buildBuilderSettingsSnapshot,
+    dispatch,
   ]);
 
   useEffect(() => {
@@ -6957,8 +4110,20 @@ const FormBuilderPage = () => {
     }
   }, [activeTab, designTabDisabled]);
 
-  const getLogicCardQuestionText = (screen) =>
-    getScreenPreviewText(screen, fieldPreviewFallback);
+  useEffect(() => {
+    if (activeScreenId == null) return undefined;
+    const screen = screens.find((s) => s.id === activeScreenId);
+    if (!screen || screen.type !== 'content') return undefined;
+    const timer = setTimeout(() => {
+      persistScreenConfigById(activeScreenId);
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [activeScreenId, fieldPreviewFallback, showIfConditions, persistScreenConfigById, screens.length]);
+
+  const getLogicCardQuestionText = useCallback(
+    (screen) => getBuilderScreenPreviewText(screen, fieldPreviewFallback, activeScreenId),
+    [fieldPreviewFallback, activeScreenId],
+  );
 
   const logicIntro = screens.find((s) => s.type === 'intro') ?? null;
   const logicEnd = screens.find((s) => s.type === 'end') ?? null;
@@ -7030,18 +4195,32 @@ const FormBuilderPage = () => {
       const left = idx * (LOGIC_FLOW_CARD_W + LOGIC_FLOW_GAP) + off.x + ddx;
       const top = off.y + ddy;
       const h = logicCardHeights[id] ?? LOGIC_FLOW_CARD_H_EST;
-      const portY = top + h / 2;
+      const dom = logicPortDomAnchors[id];
       let inX = null;
       let outX = null;
       if (item.kind === 'intro') {
-        outX = left + LOGIC_FLOW_CARD_W + LOGIC_CONNECTOR_OUT_R;
+        outX = dom?.outX ?? left + LOGIC_FLOW_CARD_W + LOGIC_CONNECTOR_OUT_R;
       } else if (item.kind === 'end') {
-        inX = left - LOGIC_CONNECTOR_IN_R;
+        inX = dom?.inX ?? left - LOGIC_CONNECTOR_IN_R;
       } else {
-        inX = left - LOGIC_CONNECTOR_IN_R;
-        outX = left + LOGIC_FLOW_CARD_W + LOGIC_CONNECTOR_OUT_R;
+        inX = dom?.inX ?? left - LOGIC_CONNECTOR_IN_R;
+        outX = dom?.outX ?? left + LOGIC_FLOW_CARD_W + LOGIC_CONNECTOR_OUT_R;
       }
-      map.set(id, { left, top, width: LOGIC_FLOW_CARD_W, height: h, inX, outX, portY, kind: item.kind });
+      const inY = dom?.inY ?? top + h / 2;
+      const outY = dom?.outY ?? top + h / 2;
+      const portY = outY;
+      map.set(id, {
+        left,
+        top,
+        width: LOGIC_FLOW_CARD_W,
+        height: h,
+        inX,
+        outX,
+        inY,
+        outY,
+        portY,
+        kind: item.kind,
+      });
     });
     return map;
   }, [
@@ -7050,6 +4229,7 @@ const FormBuilderPage = () => {
     logicCardDraggingId,
     logicCardDragOffset,
     logicCardHeights,
+    logicPortDomAnchors,
     logicCanvasZoom,
   ]);
 
@@ -7092,30 +4272,68 @@ const FormBuilderPage = () => {
     if (!board) return;
 
     const measure = () => {
-      const next = {};
+      const nextHeights = {};
+      const nextPorts = {};
+      const boardRect = board.getBoundingClientRect();
+      const zoom = logicCanvasZoom || 1;
+
+      const portCenterInBoard = (portEl) => {
+        const r = portEl.getBoundingClientRect();
+        return {
+          x: (r.left + r.width / 2 - boardRect.left) / zoom,
+          y: (r.top + r.height / 2 - boardRect.top) / zoom,
+        };
+      };
+
       board.querySelectorAll('[data-logic-card]').forEach((el) => {
         const sid = el.getAttribute('data-screen-id');
         if (!sid) return;
-        next[Number(sid)] = el.offsetHeight;
+        const id = Number(sid);
+        const kind = el.getAttribute('data-logic-kind');
+        nextHeights[id] = el.offsetHeight;
+
+        const ports = {};
+        const inPort = el.querySelector('[data-logic-input-port]');
+        const outPort = el.querySelector('[data-logic-output-port]');
+        if (kind !== 'intro' && inPort) {
+          const c = portCenterInBoard(inPort);
+          ports.inX = c.x;
+          ports.inY = c.y;
+        }
+        if (kind !== 'end' && outPort) {
+          const c = portCenterInBoard(outPort);
+          ports.outX = c.x;
+          ports.outY = c.y;
+        }
+        if (Object.keys(ports).length) {
+          nextPorts[id] = ports;
+        }
       });
+
       setLogicCardHeights((prev) => {
         let changed = false;
         const merged = { ...prev };
-        for (const sid of Object.keys(next)) {
+        for (const sid of Object.keys(nextHeights)) {
           const id = Number(sid);
-          if (merged[id] !== next[id]) {
-            merged[id] = next[id];
+          if (merged[id] !== nextHeights[id]) {
+            merged[id] = nextHeights[id];
             changed = true;
           }
         }
         for (const k of Object.keys(prev)) {
           const id = Number(k);
-          if (next[id] === undefined && merged[id] !== undefined) {
+          if (nextHeights[id] === undefined && merged[id] !== undefined) {
             delete merged[id];
             changed = true;
           }
         }
         return changed ? merged : prev;
+      });
+
+      setLogicPortDomAnchors((prev) => {
+        const prevJson = JSON.stringify(prev);
+        const nextJson = JSON.stringify(nextPorts);
+        return prevJson === nextJson ? prev : nextPorts;
       });
     };
 
@@ -7125,6 +4343,9 @@ const FormBuilderPage = () => {
     });
     ro.observe(board);
     board.querySelectorAll('[data-logic-card]').forEach((el) => ro.observe(el));
+    board.querySelectorAll('[data-logic-input-port], [data-logic-output-port]').forEach((el) =>
+      ro.observe(el),
+    );
 
     return () => ro.disconnect();
   }, [
@@ -7136,6 +4357,11 @@ const FormBuilderPage = () => {
     logicCardDraggingId,
     logicCardDragOffset,
     logicCanvasZoom,
+    logicCanvasPan,
+    introTitle,
+    introDescription,
+    endScreenTitle,
+    endScreenDescription,
   ]);
 
   useLayoutEffect(() => {
@@ -7178,6 +4404,7 @@ const FormBuilderPage = () => {
 
     const inDot = (
       <span
+        data-logic-input-port
         className="absolute z-[15] w-2 h-2 rounded-full bg-[#1a1a1a] pointer-events-none"
         style={{ top: '50%', left: 0, transform: 'translate(-50%, -50%)' }}
         aria-hidden
@@ -7448,13 +4675,13 @@ const FormBuilderPage = () => {
     input.select();
   }, [isEditingFormTitle]);
 
-  const flushBuilderDraft = useCallback(() => {
-    if (!activeFormId || screens.length === 0) return;
-    writeBuilderDraft(activeFormId, {
+  const buildCurrentPublishSnapshot = useCallback(() => {
+    if (!activeFormId || screens.length === 0) return null;
+    return buildPublishSnapshot({
       formId: activeFormId,
       templateId: location.state?.templateId ?? lastHydratedTemplateIdRef.current,
       formTitle: publishFormTitle,
-      screens,
+      screens: getScreensSnapshot(),
       nextId: nextIdRef.current,
       intro: {
         title: introTitle,
@@ -7470,6 +4697,13 @@ const FormBuilderPage = () => {
       },
       logicConnections,
       logicIfRulesByEdge,
+      logicMeta: buildLogicMeta({
+        logicModeManual,
+        logicCardOffsets,
+        aiLogicGenStatus: aiLogicGen.status,
+      }),
+      theme: buildBuilderThemeSnapshot(),
+      settings: buildBuilderSettingsSnapshot(),
     });
   }, [
     activeFormId,
@@ -7485,8 +4719,86 @@ const FormBuilderPage = () => {
     endScreenButtonText,
     logicConnections,
     logicIfRulesByEdge,
+    logicModeManual,
+    logicCardOffsets,
+    aiLogicGen.status,
     location.state?.templateId,
+    getScreensSnapshot,
+    buildBuilderThemeSnapshot,
+    buildBuilderSettingsSnapshot,
   ]);
+
+  const flushBuilderDraft = useCallback(() => {
+    const snapshot = buildCurrentPublishSnapshot();
+    if (!snapshot) return;
+    writeBuilderDraft(activeFormId, snapshot);
+    dispatch(
+      updateForm({
+        id: activeFormId,
+        changes: {
+          title: snapshot.formTitle,
+          templateId: snapshot.templateId,
+          builderSnapshot: snapshot,
+          timeAgo: 'just now',
+        },
+      })
+    );
+  }, [buildCurrentPublishSnapshot, activeFormId, dispatch]);
+
+  const handlePublishForm = useCallback(() => {
+    const blockers = getPublishBlockers(screens);
+    if (blockers.length) {
+      showToast({ type: 'info', message: blockers[0] });
+      setPublishModalOpen(false);
+      return;
+    }
+    if (!activeFormId) {
+      showToast({ type: 'error', message: 'Save your form before publishing.' });
+      setPublishModalOpen(false);
+      return;
+    }
+    const snapshot = buildCurrentPublishSnapshot();
+    if (!snapshot) {
+      showToast({ type: 'error', message: 'Nothing to publish yet.' });
+      setPublishModalOpen(false);
+      return;
+    }
+    writeBuilderDraft(activeFormId, snapshot);
+    writePublishedForm(activeFormId, snapshot);
+    dispatch(
+      updateForm({
+        id: activeFormId,
+        changes: {
+          status: 'live',
+          title: snapshot.formTitle,
+          templateId: snapshot.templateId,
+          builderSnapshot: snapshot,
+          timeAgo: 'just now',
+        },
+      })
+    );
+    builderBaselineRef.current = serializeBuilderState();
+    formTouchedRef.current = false;
+    setIsFormDirty(false);
+    setPublishModalOpen(false);
+    setIsPublishView(true);
+  }, [
+    screens,
+    activeFormId,
+    buildCurrentPublishSnapshot,
+    dispatch,
+    showToast,
+    serializeBuilderState,
+  ]);
+
+  const handlePublishClick = useCallback(() => {
+    const blockers = getPublishBlockers(screens);
+    if (blockers.length) {
+      showToast({ type: 'info', message: blockers[0] });
+      return;
+    }
+    setPublishModalOpen(true);
+  }, [screens, showToast]);
 
   const restoreFromBuilderBaseline = useCallback(() => {
     if (!builderBaselineRef.current) return;
@@ -7606,11 +4918,947 @@ const FormBuilderPage = () => {
 
   const formAccentColor = location.state?.formColor ?? '#3b7bf6';
 
+  const closeAllRightPanelsRef = useRef(closeAllRightPanels);
+  closeAllRightPanelsRef.current = closeAllRightPanels;
+
+  const openSingleConfigPanel = useCallback(() => {
+    closeAllRightPanelsRef.current();
+    setTimeout(() => setShowSingleConfigPanel(true), 300);
+  }, []);
+
+  const openMultipleConfigPanel = useCallback(() => {
+    closeAllRightPanelsRef.current();
+    setTimeout(() => setShowMultipleConfigPanel(true), 300);
+  }, []);
+
+  const handleConfigureFromCanvas = useCallback(
+    (label) => {
+      const panel = FIELD_LABEL_TO_CONFIG_PANEL[label];
+      if (!panel) return;
+      closeAllRightPanelsRef.current();
+      openPanelByName(panel);
+    },
+    [openPanelByName],
+  );
+
+  const builderTheme = useMemo(
+    () =>
+      resolveBuilderTheme({
+        designBackground,
+        designTextColor,
+        formAccentColor,
+        designCardColor,
+        designCardOpacity,
+        designCardImage,
+        designLayoutStyle,
+        hexToRgba,
+      }),
+    [
+      designBackground,
+      designTextColor,
+      formAccentColor,
+      designCardColor,
+      designCardOpacity,
+      designCardImage,
+      designLayoutStyle,
+    ],
+  );
+
+  const canvasConfigSnapshot = JSON.stringify(configGlobalsRef.current);
+
+  const canvasFieldConfigs = useMemo(
+    () =>
+      buildCanvasFieldConfigs({
+        ctaButtonLabel,
+        ctaHeadingText,
+        ctaHelperText,
+        ctaDurationText,
+        ctaButtonSize,
+        ctaButtonStyle,
+        ctaCornerRadius,
+        ctaShowIcon,
+        ctaHeadingSize,
+        ctaBodySize,
+        ctaFontWeight,
+        ctaTextAlign,
+        ctaPadding,
+        ctaTextColor,
+        ctaBtnColor,
+        ctaLabelColor,
+        ctaContentWidth,
+        isEditingCtaCard,
+        setIsEditingCtaCard,
+        setCtaHeadingText,
+        setCtaHelperText,
+        setCtaDurationText,
+        headingText,
+        subHeading,
+        headingRequired,
+        headingHidden,
+        headingLevel,
+        headingTextSize,
+        headingAlignment,
+        headingFontWeight,
+        headingAnswerText,
+        isEditingHeadingCard,
+        setIsEditingHeadingCard,
+        setHeadingText,
+        setSubHeading,
+        setHeadingAnswerText,
+        descriptionContent,
+        descriptionHidden,
+        descriptionShowCharCount,
+        descriptionCharLimit,
+        descriptionFormatting,
+        descriptionTextSize,
+        descriptionAlignment,
+        setDescriptionContent,
+        imageHidden,
+        imagePreview,
+        imageAltText,
+        imageCaption,
+        imageLinkOnClick,
+        imageLinkUrl,
+        imageOpenInNewTab,
+        imageAlignment,
+        imageWidth,
+        imageCornerRadius,
+        imageQuestion,
+        imageDescription,
+        setImagePreview,
+        setImageFileName,
+        setImageCaption,
+        setImageQuestion,
+        setImageDescription,
+        videoUrl,
+        videoCaption,
+        videoWidth,
+        videoAspectRatio,
+        videoCornerRadius,
+        videoQuestion,
+        videoDescription,
+        videoRequired,
+        videoHidden,
+        videoLoop,
+        videoAutoplay,
+        videoShowControls,
+        videoSource,
+        setVideoCaption,
+        setVideoQuestion,
+        setVideoDescription,
+        contactQuestion,
+        contactHelperText,
+        contactFields,
+        contactRequired,
+        setContactQuestion,
+        setContactHelperText,
+        addressQuestion,
+        addressHelperText,
+        addressFields,
+        addressRequired,
+        setAddressQuestion,
+        setAddressHelperText,
+        workQuestion,
+        workHelperText,
+        workFields,
+        workRequired,
+        setWorkQuestion,
+        setWorkHelperText,
+        shortTextQuestion,
+        shortTextHelperText,
+        shortTextPlaceholder,
+        shortTextMaxChars,
+        shortTextMinChars,
+        shortTextValidation,
+        shortTextAlign,
+        shortTextSize,
+        shortTextRequired,
+        shortTextHidden,
+        shortTextResponseQualityEnabled,
+        shortTextResponseQualityOptions,
+        setShortTextQuestion,
+        setShortTextHelperText,
+        setShortTextPlaceholder,
+        longTextQuestion,
+        longTextHelperText,
+        longTextPlaceholder,
+        longTextMaxChars,
+        longTextMinChars,
+        longTextValidation,
+        longTextAlign,
+        longTextSize,
+        longTextRequired,
+        longTextHidden,
+        responseQualityEnabled,
+        responseQualityOptions,
+        setLongTextQuestion,
+        setLongTextHelperText,
+        setLongTextPlaceholder,
+        singleQuestion,
+        singleHelperText,
+        singleOptions,
+        singleLayout,
+        singleOptionHeight,
+        singleRequired,
+        singleAllowOther,
+        singleRandomize,
+        singleMultipleSelect,
+        singleMinChoices,
+        singleMaxChoices,
+        singleShowKeyboardHints,
+        setSingleQuestion,
+        setSingleHelperText,
+        multipleQuestion,
+        multipleHelperText,
+        multipleOptions,
+        multipleLayout,
+        multipleRequired,
+        multipleAllowOther,
+        multipleRandomize,
+        multipleMultipleSelect,
+        multipleMinChoices,
+        multipleMaxChoices,
+        multipleShowKeyboardHints,
+        multipleOptionHeight,
+        setMultipleQuestion,
+        setMultipleHelperText,
+        mediaQuestion,
+        mediaHelperText,
+        mediaOptions,
+        mediaAllowMultiple,
+        mediaRequired,
+        mediaRandomiseOrder,
+        mediaMinChoices,
+        mediaMaxChoices,
+        mediaLayout,
+        mediaOptionHeight,
+        setMediaQuestion,
+        setMediaHelperText,
+        captchaProvider,
+        captchaSiteKey,
+        captchaEnabled,
+        captchaVisibility,
+        multiImageQuestion,
+        multiImageHelperText,
+        multiImageMaxFiles,
+        multiImageRequired,
+        multiImageMultipleFiles,
+        multiImageMaxFileSize,
+        setMultiImageQuestion,
+        setMultiImageHelperText,
+        uploadQuestion,
+        uploadHelperText,
+        uploadMaxFileSize,
+        setUploadQuestion,
+        setUploadHelperText,
+        ratingQuestion,
+        ratingRequired,
+        ratingUseScale,
+        ratingUseSlider,
+        ratingMaxRating,
+        ratingStyle,
+        ratingLowLabel,
+        ratingHighLabel,
+        ratingShowLabels,
+        ratingIconSize,
+        setRatingQuestion,
+        setRatingLowLabel,
+        setRatingHighLabel,
+        dateQuestion,
+        dateHelperText,
+        dateRequired,
+        setDateQuestion,
+        setDateHelperText,
+        timeQuestion,
+        timeHelperText,
+        timeRequired,
+        timeUse12h,
+        timeShowSeconds,
+        timeMinTime,
+        timeMaxTime,
+        setTimeQuestion,
+        setTimeHelperText,
+        openSingleConfigPanel,
+        openMultipleConfigPanel,
+      }),
+    [
+      canvasConfigSnapshot,
+      isEditingCtaCard,
+      isEditingHeadingCard,
+      openSingleConfigPanel,
+      openMultipleConfigPanel,
+    ],
+  );
+
+  /** Keep canvas visible when a content screen is selected (picker only replaces canvas for intro/end). */
+  const showBlockPickerOnCanvas =
+    showContentPanel && !isPreview && activeScreen?.type !== 'content';
+
+  if (!builderHydrated) {
+    return <FormBuilderLoadingFallback />;
+  }
+
   if (isPublishView) {
     return (
-      <FormPublishView formTitle={publishFormTitle} />
+      <FormPublishView
+        formTitle={publishFormTitle}
+        formId={activeFormId}
+        showOnboardingStepper={showOnboardingStepper}
+        onRetryPublish={handlePublishForm}
+        onSaveAsDraft={() => setIsPublishView(false)}
+      />
     );
   }
+
+  const builderPanelBindings = {
+    ACCORDION_SECTIONS,
+    addContentScreen,
+    CONFIGURE_TILE_BASE,
+    CONFIGURE_TILE_GRID,
+    CONTENT_SECTIONS,
+    CTA_COLOR_PALETTE,
+    ESSENTIALS,
+    QUESTION_TEMPLATE_CATEGORIES,
+    TABS,
+    THEMES,
+    toggleContentSection,
+    toggleSection,
+    activeScreen,
+    activeScreenId,
+    activeTab,
+    activeThemeId,
+    addressFields,
+    addressHelperText,
+    addressQuestion,
+    addressRequired,
+    addressSections,
+    aiLogicGen,
+    cancelIfThenLogicPanel,
+    configureIsUpload,
+    configureMaxFileSize,
+    canvasScale,
+    captchaBadgePosition,
+    captchaBlockOnFailure,
+    captchaEnabled,
+    captchaProvider,
+    captchaSecretKey,
+    captchaSections,
+    captchaShowBadge,
+    captchaSiteKey,
+    captchaVisibility,
+    closeAllRightPanels,
+    closeIfThenLogicPanel,
+    contactFields,
+    contactHelperText,
+    contactQuestion,
+    contactRequired,
+    contactSections,
+    contentDraggingId,
+    contentDropTargetId,
+    ctaBodySize,
+    ctaBtnColor,
+    ctaBtnColorGridOpen,
+    ctaButtonLabel,
+    ctaButtonSize,
+    ctaButtonStyle,
+    ctaColorGridOpen,
+    ctaContentWidth,
+    ctaCornerRadius,
+    ctaDurationText,
+    ctaFontWeight,
+    ctaHeadingSize,
+    ctaHeadingText,
+    ctaHelperText,
+    ctaLabelColor,
+    ctaPadding,
+    ctaSections,
+    ctaShowIcon,
+    ctaTextAlign,
+    ctaTextColor,
+    dateHelperText,
+    dateQuestion,
+    dateRequired,
+    dateSections,
+    descriptionAlignment,
+    descriptionCharLimit,
+    descriptionContent,
+    descriptionFormatting,
+    descriptionHidden,
+    descriptionSections,
+    descriptionShowCharCount,
+    descriptionTextSize,
+    designBackground,
+    designCardColor,
+    designCardColorGridOpen,
+    designCardImage,
+    designCardOpacity,
+    designLayoutStyle,
+    designTextColor,
+    designTextColorGridOpen,
+    designTypography,
+    deviceView,
+    draftButtonText,
+    draftDescription,
+    draftEndButtonText,
+    draftEndDescription,
+    draftEndTitle,
+    draftFormTitle,
+    draftLogo,
+    draftTitle,
+    endScreenButtonText,
+    endScreenDescription,
+    endScreenTitle,
+    getLogicCardQuestionText,
+    getLogicDestinationOptions,
+    getLogicQuestionOptionsForForm,
+    handleAddScreen,
+    handleIntroEssentialSelect,
+    handleSaveLongTextResponseQuality,
+    handleSaveShortTextResponseQuality,
+    handleSelectTheme,
+    headingAlignment,
+    headingAnswerText,
+    headingFontWeight,
+    headingHidden,
+    headingLevel,
+    headingRequired,
+    headingSections,
+    headingText,
+    headingTextSize,
+    hexToRgba,
+    ifThenDraft,
+    ifThenLogicPanelEdge,
+    imageAlignment,
+    imageAltText,
+    imageCaption,
+    imageCornerRadius,
+    imageDescription,
+    imageFileInputRef,
+    imageFileName,
+    imageHidden,
+    imageLinkOnClick,
+    imageLinkUrl,
+    imageOpenInNewTab,
+    imagePreview,
+    imageQuestion,
+    imageSections,
+    imageWidth,
+    introButtonText,
+    introDescription,
+    introEssential,
+    introTitle,
+    isEditingContent,
+    isEditingCtaCard,
+    isEditingEndScreen,
+    isEditingFormTitle,
+    isEditingHeadingCard,
+    isFormDirty,
+    isPreview,
+    isPublishView,
+    loadedFormTitle,
+    logicCanvasPan,
+    logicCanvasPanning,
+    logicCanvasZoom,
+    logicCardDragOffset,
+    logicCardDraggingId,
+    logicCardHeights,
+    logicCardOffsets,
+    logicConnectDrag,
+    logicConnections,
+    logicConnectorMenu,
+    logicDisconnectHoveredKey,
+    logicEdgeKindHoveredKey,
+    logicElseByScreen,
+    logicIfRulesByEdge,
+    logicModeManual,
+    logicQuestionOptionsTick,
+    logoImage,
+    longTextAlign,
+    longTextHelperText,
+    longTextHidden,
+    longTextMaxChars,
+    longTextMinChars,
+    longTextPlaceholder,
+    longTextQuestion,
+    longTextRequired,
+    longTextSections,
+    longTextSize,
+    longTextValidation,
+    markFormTouched,
+    mediaAllowMultiple,
+    mediaHelperText,
+    mediaLayout,
+    mediaMaxChoices,
+    mediaMinChoices,
+    mediaOptionHeight,
+    mediaOptions,
+    mediaQuestion,
+    mediaRandomiseOrder,
+    mediaRequired,
+    mediaSections,
+    multiImageAcceptedTypes,
+    multiImageHelperText,
+    multiImageMaxFileSize,
+    multiImageMaxFiles,
+    multiImageMultipleFiles,
+    multiImageQuestion,
+    multiImageRequired,
+    multiImageSections,
+    multiImageShowPreview,
+    multiImageSizeDropdownOpen,
+    multiImageUploadZoneSize,
+    multipleAllowOther,
+    multipleHelperText,
+    multipleLayout,
+    multipleMaxChoices,
+    multipleMinChoices,
+    multipleMultipleSelect,
+    multipleOptionHeight,
+    multipleOptions,
+    multipleQuestion,
+    multipleRandomize,
+    multipleRequired,
+    multipleSections,
+    multipleShowKeyboardHints,
+    openContentSections,
+    openPanelByName,
+    pendingScreenDelete,
+    previewSnapVersion,
+    previewVisitStack,
+    priorScreensForActive,
+    publishModalOpen,
+    ratingHighLabel,
+    ratingIconSize,
+    ratingLowLabel,
+    ratingMaxRating,
+    ratingQuestion,
+    ratingRequired,
+    ratingSections,
+    ratingShowLabels,
+    ratingStyle,
+    ratingUseScale,
+    ratingUseSlider,
+    responseQualityEnabled,
+    responseQualityOptions,
+    saveIfThenLogic,
+    screens,
+    sections,
+    selectedTemplate,
+    setActiveScreenId,
+    setActiveTab,
+    setActiveThemeId,
+    setAddressFields,
+    setAddressHelperText,
+    setAddressQuestion,
+    setAddressRequired,
+    setAddressSections,
+    setAiLogicGen,
+    setCanvasScale,
+    setCaptchaBadgePosition,
+    setCaptchaBlockOnFailure,
+    setCaptchaEnabled,
+    setCaptchaProvider,
+    setCaptchaSecretKey,
+    setCaptchaSections,
+    setCaptchaShowBadge,
+    setCaptchaSiteKey,
+    setConfigureMaxFileSize,
+    setCaptchaVisibility,
+    setContactFields,
+    setContactHelperText,
+    setContactQuestion,
+    setContactRequired,
+    setContactSections,
+    setContentDraggingId,
+    setContentDropTargetId,
+    setCtaBodySize,
+    setCtaBtnColor,
+    setCtaBtnColorGridOpen,
+    setCtaButtonLabel,
+    setCtaButtonSize,
+    setCtaButtonStyle,
+    setCtaColorGridOpen,
+    setCtaContentWidth,
+    setCtaCornerRadius,
+    setCtaDurationText,
+    setCtaFontWeight,
+    setCtaHeadingSize,
+    setCtaHeadingText,
+    setCtaHelperText,
+    setCtaLabelColor,
+    setCtaPadding,
+    setCtaSections,
+    setCtaShowIcon,
+    setCtaTextAlign,
+    setCtaTextColor,
+    setDateHelperText,
+    setDateQuestion,
+    setDateRequired,
+    setDateSections,
+    setDescriptionAlignment,
+    setDescriptionCharLimit,
+    setDescriptionContent,
+    setDescriptionFormatting,
+    setDescriptionHidden,
+    setDescriptionSections,
+    setDescriptionShowCharCount,
+    setDescriptionTextSize,
+    setDesignBackground,
+    setDesignCardColor,
+    setDesignCardColorGridOpen,
+    setDesignTextColorGridOpen,
+    setDesignCardImage,
+    setDesignCardOpacity,
+    setDesignLayoutStyle,
+    setDesignTextColor,
+    setDesignTypography,
+    setDeviceView,
+    setDraftButtonText,
+    setDraftDescription,
+    setDraftEndButtonText,
+    setDraftEndDescription,
+    setDraftEndTitle,
+    setDraftFormTitle,
+    setDraftLogo,
+    setDraftTitle,
+    setEndScreenButtonText,
+    setEndScreenDescription,
+    setEndScreenTitle,
+    setHeadingAlignment,
+    setHeadingAnswerText,
+    setHeadingFontWeight,
+    setHeadingHidden,
+    setHeadingLevel,
+    setHeadingRequired,
+    setHeadingSections,
+    setHeadingText,
+    setHeadingTextSize,
+    setIfThenDraft,
+    setIfThenLogicPanelEdge,
+    setImageAlignment,
+    setImageAltText,
+    setImageCaption,
+    setImageCornerRadius,
+    setImageDescription,
+    setImageFileName,
+    setImageHidden,
+    setImageLinkOnClick,
+    setImageLinkUrl,
+    setImageOpenInNewTab,
+    setImagePreview,
+    setImageQuestion,
+    setImageSections,
+    setImageWidth,
+    setIntroButtonText,
+    setIntroDescription,
+    setIntroEssential,
+    setIntroTitle,
+    setIsEditingContent,
+    setIsEditingCtaCard,
+    setIsEditingEndScreen,
+    setIsEditingFormTitle,
+    setIsEditingHeadingCard,
+    setIsFormDirty,
+    setIsPreview,
+    setIsPublishView,
+    setLoadedFormTitle,
+    setLogicCanvasPan,
+    setLogicCanvasPanning,
+    setLogicCanvasZoom,
+    setLogicCardDragOffset,
+    setLogicCardDraggingId,
+    setLogicCardHeights,
+    setLogicCardOffsets,
+    setLogicConnectDrag,
+    setLogicConnections,
+    setLogicConnectorMenu,
+    setLogicDisconnectHoveredKey,
+    setLogicEdgeKindHoveredKey,
+    setLogicElseByScreen,
+    setLogicIfRulesByEdge,
+    setLogicModeManual,
+    setLogicQuestionOptionsTick,
+    setLogoImage,
+    setLongTextAlign,
+    setLongTextHelperText,
+    setLongTextHidden,
+    setLongTextMaxChars,
+    setLongTextMinChars,
+    setLongTextPlaceholder,
+    setLongTextQuestion,
+    setLongTextRequired,
+    setLongTextSections,
+    setLongTextSize,
+    setLongTextValidation,
+    setMediaAllowMultiple,
+    setMediaHelperText,
+    setMediaLayout,
+    setMediaMaxChoices,
+    setMediaMinChoices,
+    setMediaOptionHeight,
+    setMediaOptions,
+    setMediaQuestion,
+    setMediaRandomiseOrder,
+    setMediaRequired,
+    setMediaSections,
+    setMultiImageAcceptedTypes,
+    setMultiImageHelperText,
+    setMultiImageMaxFileSize,
+    setMultiImageMaxFiles,
+    setMultiImageMultipleFiles,
+    setMultiImageQuestion,
+    setMultiImageRequired,
+    setMultiImageSections,
+    setMultiImageShowPreview,
+    setMultiImageSizeDropdownOpen,
+    setMultiImageUploadZoneSize,
+    setMultipleAllowOther,
+    setMultipleHelperText,
+    setMultipleLayout,
+    setMultipleMaxChoices,
+    setMultipleMinChoices,
+    setMultipleMultipleSelect,
+    setMultipleOptionHeight,
+    setMultipleOptions,
+    setMultipleQuestion,
+    setMultipleRandomize,
+    setMultipleRequired,
+    setMultipleSections,
+    setMultipleShowKeyboardHints,
+    setOpenContentSections,
+    setPendingScreenDelete,
+    setPreviewSnapVersion,
+    setPreviewVisitStack,
+    setPublishModalOpen,
+    setRatingHighLabel,
+    setRatingIconSize,
+    setRatingLowLabel,
+    setRatingMaxRating,
+    setRatingQuestion,
+    setRatingRequired,
+    setRatingSections,
+    setRatingShowLabels,
+    setRatingStyle,
+    setRatingUseScale,
+    setRatingUseSlider,
+    setResponseQualityEnabled,
+    setResponseQualityOptions,
+    setScreens,
+    setSections,
+    setSelectedTemplate,
+    setSettingsAutoAdvance,
+    setSettingsBackButton,
+    setSettingsCompletionAction,
+    setSettingsConfirmationEmail,
+    setSettingsEmailCollection,
+    setSettingsLanguage,
+    setSettingsOneAtATime,
+    setSettingsPasswordProtection,
+    setSettingsResponseLimit,
+    setSettingsResponseLimitCount,
+    setSettingsResubmission,
+    setSettingsSubmissionNotifications,
+    setSettingsWebhook,
+    setShortTextAlign,
+    setShortTextHelperText,
+    setShortTextHidden,
+    setShortTextMaxChars,
+    setShortTextMinChars,
+    setShortTextPlaceholder,
+    setShortTextQuestion,
+    setShortTextRequired,
+    setShortTextResponseQualityEnabled,
+    setShortTextResponseQualityOptions,
+    setShortTextSections,
+    setShortTextSize,
+    setShortTextValidation,
+    setShowAddressConfigPanel,
+    setShowCaptchaConfigPanel,
+    setShowConfigPanel,
+    setShowContactConfigPanel,
+    setShowContentPanel,
+    setShowCtaConfigPanel,
+    setShowDateConfigPanel,
+    setShowDescriptionConfigPanel,
+    setShowDesignPanel,
+    setShowHeadingConfigPanel,
+    setShowIfConditions,
+    setShowImageConfigPanel,
+    setShowLongTextConfigPanel,
+    setShowMediaConfigPanel,
+    setShowMultiImageConfigPanel,
+    setShowMultipleConfigPanel,
+    setShowRatingConfigPanel,
+    setShowShortTextConfigPanel,
+    setShowSingleConfigPanel,
+    setShowThemeOverlay,
+    setShowTimeConfigPanel,
+    setShowVideoConfigPanel,
+    setShowWorkConfigPanel,
+    setSingleAllowOther,
+    setSingleHelperText,
+    setSingleLayout,
+    setSingleMaxChoices,
+    setSingleMinChoices,
+    setSingleMultipleSelect,
+    setSingleOptionHeight,
+    setSingleOptions,
+    setSingleQuestion,
+    setSingleRandomize,
+    setSingleRequired,
+    setSingleSections,
+    setSingleShowKeyboardHints,
+    setSubHeading,
+    setTimeHelperText,
+    setTimeMaxTime,
+    setTimeMinTime,
+    setTimeQuestion,
+    setTimeRequired,
+    setTimeSections,
+    setTimeShowSeconds,
+    setTimeUse12h,
+    setUnsavedChangesPrompt,
+    setUploadHelperText,
+    setUploadMaxFileSize,
+    setUploadQuestion,
+    setVideoAspectRatio,
+    setVideoAutoplay,
+    setVideoCaption,
+    setVideoCornerRadius,
+    setVideoDescription,
+    setVideoHidden,
+    setVideoLoop,
+    setVideoQuestion,
+    setVideoRequired,
+    setVideoSections,
+    setVideoShowControls,
+    setVideoSource,
+    setVideoUrl,
+    setVideoWidth,
+    setWelcomeAlignment,
+    setWelcomeHelperText,
+    setWelcomeHidden,
+    setWelcomeInputType,
+    setWelcomeInputTypeOpen,
+    setWelcomeMaxLength,
+    setWelcomeMinLength,
+    setWelcomePlaceholder,
+    setWelcomeReadOnly,
+    setWelcomeRequired,
+    setWelcomeTextSize,
+    setWorkFields,
+    setWorkHelperText,
+    setWorkQuestion,
+    setWorkRequired,
+    setWorkSections,
+    settingsAutoAdvance,
+    settingsBackButton,
+    settingsCompletionAction,
+    settingsConfirmationEmail,
+    settingsEmailCollection,
+    settingsLanguage,
+    settingsOneAtATime,
+    settingsPasswordProtection,
+    settingsResponseLimit,
+    settingsResponseLimitCount,
+    settingsResubmission,
+    settingsSubmissionNotifications,
+    settingsWebhook,
+    shortTextAlign,
+    shortTextHelperText,
+    shortTextHidden,
+    shortTextMaxChars,
+    shortTextMinChars,
+    shortTextPlaceholder,
+    shortTextQuestion,
+    shortTextRequired,
+    shortTextResponseQualityEnabled,
+    shortTextResponseQualityOptions,
+    shortTextSections,
+    shortTextSize,
+    shortTextValidation,
+    showAddressConfigPanel,
+    showCaptchaConfigPanel,
+    showConfigPanel,
+    showContactConfigPanel,
+    showContentPanel,
+    showCtaConfigPanel,
+    showDateConfigPanel,
+    showDescriptionConfigPanel,
+    showDesignPanel,
+    showHeadingConfigPanel,
+    showIfConditions,
+    showImageConfigPanel,
+    showLongTextConfigPanel,
+    showMediaConfigPanel,
+    showMultiImageConfigPanel,
+    showMultipleConfigPanel,
+    showRatingConfigPanel,
+    showShortTextConfigPanel,
+    showSingleConfigPanel,
+    showThemeOverlay,
+    showTimeConfigPanel,
+    showVideoConfigPanel,
+    showWorkConfigPanel,
+    singleAllowOther,
+    singleHelperText,
+    singleLayout,
+    singleMaxChoices,
+    singleMinChoices,
+    singleMultipleSelect,
+    singleOptionHeight,
+    singleOptions,
+    singleQuestion,
+    singleRandomize,
+    singleRequired,
+    singleSections,
+    singleShowKeyboardHints,
+    subHeading,
+    switchPanel,
+    timeHelperText,
+    timeMaxTime,
+    timeMinTime,
+    timeQuestion,
+    timeRequired,
+    timeSections,
+    timeShowSeconds,
+    timeUse12h,
+    unsavedChangesPrompt,
+    uploadHelperText,
+    uploadMaxFileSize,
+    uploadQuestion,
+    videoAspectRatio,
+    videoAutoplay,
+    videoCaption,
+    videoCornerRadius,
+    videoDescription,
+    videoHidden,
+    videoLoop,
+    videoQuestion,
+    videoRequired,
+    videoSections,
+    videoShowControls,
+    videoSource,
+    videoUrl,
+    videoWidth,
+    welcomeAlignment,
+    welcomeHelperText,
+    welcomeHidden,
+    welcomeInputType,
+    welcomeInputTypeOpen,
+    welcomeInputTypeRef,
+    welcomeMaxLength,
+    welcomeMinLength,
+    welcomePlaceholder,
+    welcomeReadOnly,
+    welcomeRequired,
+    welcomeTextSize,
+    workFields,
+    workHelperText,
+    workQuestion,
+    workRequired,
+    workSections,
+  };
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-white">
@@ -7639,8 +5887,18 @@ const FormBuilderPage = () => {
           </button>
           <button
             type="button"
-            onClick={() => setPublishModalOpen(true)}
-            className="inline-flex items-center gap-[6px] px-[15px] py-[8px] bg-[#1a1a1a] border border-[#1a1a1a] rounded-[8px] text-[12px] font-medium text-white hover:bg-[#2c2c2c] transition-colors cursor-pointer whitespace-nowrap"
+            onClick={handlePublishClick}
+            disabled={!canPublishForm(screens)}
+            title={
+              !canPublishForm(screens)
+                ? getPublishBlockers(screens)[0]
+                : undefined
+            }
+            className={`inline-flex items-center gap-[6px] px-[15px] py-[8px] border rounded-[8px] text-[12px] font-medium transition-colors whitespace-nowrap ${
+              canPublishForm(screens)
+                ? 'bg-[#1a1a1a] border-[#1a1a1a] text-white hover:bg-[#2c2c2c] cursor-pointer'
+                : 'bg-[#e8e8e6] border-[#e8e8e6] text-[#a8a8a4] cursor-not-allowed'
+            }`}
           >
             Publish
             <RiArrowRightLine size={14} className="shrink-0" aria-hidden />
@@ -7652,9 +5910,6 @@ const FormBuilderPage = () => {
       {/* ── Body: Sidebar + Screens Panel + Content + Config Panel ── */}
       <LayoutGroup>
       <div className="relative flex flex-1 overflow-hidden">
-        {/* ── Icon sidebar (collapsible) ── */}
-        {!isPreview && <Sidebar hideLogo />}
-
         {/* ── Screens panel (visible after first screen is added) ── */}
         {!isPreview && hasScreens && (
           <motion.div
@@ -7691,7 +5946,6 @@ const FormBuilderPage = () => {
                   Single: 'singleConfig',
                   Multiple: 'multipleConfig',
                   Media: 'mediaConfig',
-                  Maps: 'mapConfig',
                   Captcha: 'captchaConfig',
                   'Multi-image upload': 'multiImageConfig',
                   Upload: 'multiImageConfig',
@@ -7713,7 +5967,6 @@ const FormBuilderPage = () => {
                   singleConfig: showSingleConfigPanel,
                   multipleConfig: showMultipleConfigPanel,
                   mediaConfig: showMediaConfigPanel,
-                  mapConfig: showMapConfigPanel,
                   captchaConfig: showCaptchaConfigPanel,
                   multiImageConfig: showMultiImageConfigPanel,
                   ratingConfig: showRatingConfigPanel,
@@ -7802,6 +6055,7 @@ const FormBuilderPage = () => {
 
                         <LayoutGroup id="content-screens-list">
                           <div className="flex flex-col shrink-0">
+                            <AnimatePresence initial={false}>
                             {contentScreens.map((screen) => {
                             const isActive = activeScreenId === screen.id;
 
@@ -7810,7 +6064,11 @@ const FormBuilderPage = () => {
                             const { Icon: ScreenIcon, bg: iconBg, color: iconColor } = SCREEN_ICON_MAP[
                               screen.label
                             ] ?? { Icon: RiFileTextLine, bg: 'bg-[#f4f4f4]', color: 'text-gray-500' };
-                            const questionText = getScreenPreviewText(screen, fieldPreviewFallback);
+                            const questionText = getBuilderScreenPreviewText(
+                              screen,
+                              fieldPreviewFallback,
+                              activeScreenId,
+                            );
 
                             const isDropTarget = contentDropTargetId === screen.id;
                             const isDraggingRow = contentDraggingId === screen.id;
@@ -7819,11 +6077,12 @@ const FormBuilderPage = () => {
                               <motion.div
                                 key={screen.id}
                                 layout
+                                initial={SIDEBAR_ROW_MOTION.initial}
+                                animate={SIDEBAR_ROW_MOTION.animate}
+                                exit={SIDEBAR_ROW_MOTION.exit}
                                 data-content-screen-row
                                 data-screen-id={screen.id}
-                                transition={{
-                                  layout: { type: 'spring', stiffness: 520, damping: 36, mass: 0.85 },
-                                }}
+                                transition={SIDEBAR_ROW_TRANSITION}
                                 className={`relative px-[14px] py-[4px] ${isDraggingRow ? 'z-20' : 'z-0'}`}
                                 onDragOver={(e) => handleContentRowDragOver(e, screen.id)}
                                 onDrop={handleContentRowDrop}
@@ -7924,6 +6183,7 @@ const FormBuilderPage = () => {
                               </motion.div>
                             );
                               })}
+                            </AnimatePresence>
                           </div>
                         </LayoutGroup>
 
@@ -8055,241 +6315,42 @@ const FormBuilderPage = () => {
           </div>
           )}
 
-          {/* -- Settings Panel -- */}
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <AnimatePresence mode="wait">
           {activeTab === 'settings' ? (
-            <div className="flex-1 overflow-y-auto bg-[#fafaf9]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-              <div className="max-w-[678px] mx-auto py-8 px-6">
-
-                {/* FORM BEHAVIOR */}
-                <div className="mb-6">
-                  <div className="h-[48px] flex items-end pb-[10px]">
-                    <span className="text-[10px] font-semibold tracking-[0.8px] uppercase text-[#7a7a72]">Form Behavior</span>
-                  </div>
-                  <div className="border border-[#e4e2dc] rounded-[6px] overflow-hidden bg-white">
-                    {/* One question at a time */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiFileTextLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">One question at a time</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Show each question on its own screen (conversational style)</div>
-                      </div>
-                      <Toggle checked={settingsOneAtATime} onChange={setSettingsOneAtATime} />
-                    </div>
-                    {/* Auto-advance */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiArrowRightLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Auto-advance</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Move to next question automatically when a choice is clicked</div>
-                      </div>
-                      <Toggle checked={settingsAutoAdvance} onChange={setSettingsAutoAdvance} />
-                    </div>
-                    {/* Back button */}
-                    <div className="flex items-center px-4 py-[14px]">
-                      <RiArrowLeftLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Back button</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Show a back button so respondents can review previous answers</div>
-                      </div>
-                      <Toggle checked={settingsBackButton} onChange={setSettingsBackButton} />
-                    </div>
-                  </div>
-                </div>
-
-                {/* SUBMISSION */}
-                <div className="mb-6">
-                  <div className="h-[46px] flex items-end pb-[10px]">
-                    <span className="text-[10px] font-semibold tracking-[0.8px] uppercase text-[#7a7a72]">Submission</span>
-                  </div>
-                  <div className="border border-[#e4e2dc] rounded-[6px] overflow-hidden bg-white">
-                    {/* Completion action */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiCheckLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Completion action</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">What happens when a respondent completes the form</div>
-                      </div>
-                      <select
-                        value={settingsCompletionAction}
-                        onChange={(e) => setSettingsCompletionAction(e.target.value)}
-                        className="ml-4 h-[26px] text-[12px] text-[#1a1a1a] border border-[#e4e2dc] rounded-[4px] px-2 bg-white cursor-pointer focus:outline-none focus:border-[#1a1a1a] shrink-0"
-                      >
-                        <option>Show thank you screen</option>
-                        <option>Redirect to URL</option>
-                        <option>Show custom message</option>
-                      </select>
-                    </div>
-                    {/* Re-submission */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiRadioButtonLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Re-submission</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Let the same respondent fill out the form more than once</div>
-                      </div>
-                      <Toggle checked={settingsResubmission} onChange={setSettingsResubmission} />
-                    </div>
-                    {/* Confirmation email */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiMailLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Confirmation email</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Send an automatic confirmation to respondents after they submit</div>
-                      </div>
-                      <Toggle checked={settingsConfirmationEmail} onChange={setSettingsConfirmationEmail} />
-                    </div>
-                    {/* Submission notifications */}
-                    <div className="flex items-center px-4 py-[14px]">
-                      <RiTimeLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Submission notifications</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Get an email each time someone completes this form</div>
-                      </div>
-                      <Toggle checked={settingsSubmissionNotifications} onChange={setSettingsSubmissionNotifications} />
-                    </div>
-                  </div>
-                </div>
-
-                {/* RESPONDENT EXPERIENCE */}
-                <div className="mb-6">
-                  <div className="h-[43px] flex items-end pb-[10px]">
-                    <span className="text-[10px] font-semibold tracking-[0.8px] uppercase text-[#7a7a72]">Respondent Experience</span>
-                  </div>
-                  <div className="border border-[#e4e2dc] rounded-[6px] overflow-hidden bg-white">
-                    {/* Email collection */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiMailLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Email collection</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Ask respondents for their email before they start</div>
-                      </div>
-                      <Toggle checked={settingsEmailCollection} onChange={setSettingsEmailCollection} />
-                    </div>
-                    {/* Language */}
-                    <div className="flex items-center px-4 py-[14px]">
-                      <RiGlobeLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Language</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">UI labels and system text language for respondents</div>
-                      </div>
-                      <select
-                        value={settingsLanguage}
-                        onChange={(e) => setSettingsLanguage(e.target.value)}
-                        className="ml-4 h-[26px] text-[12px] text-[#1a1a1a] border border-[#e4e2dc] rounded-[4px] px-2 bg-white cursor-pointer focus:outline-none focus:border-[#1a1a1a] shrink-0"
-                      >
-                        <option>English</option>
-                        <option>Spanish</option>
-                        <option>French</option>
-                        <option>German</option>
-                        <option>Portuguese</option>
-                        <option>Arabic</option>
-                        <option>Chinese</option>
-                        <option>Japanese</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* ACCESS & SECURITY */}
-                <div className="mb-6">
-                  <div className="h-[43px] flex items-end pb-[10px]">
-                    <span className="text-[10px] font-semibold tracking-[0.8px] uppercase text-[#7a7a72]">Access &amp; Security</span>
-                  </div>
-                  <div className="border border-[#e4e2dc] rounded-[6px] overflow-hidden bg-white">
-                    {/* Password protection */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiLockLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Password protection</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Require a password before respondents can access the form</div>
-                      </div>
-                      <Toggle checked={settingsPasswordProtection} onChange={setSettingsPasswordProtection} />
-                    </div>
-                    {/* Response limit */}
-                    <div className="flex items-center px-4 py-[14px]">
-                      <RiCalendarLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Response limit</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Close the form after a set number of responses</div>
-                      </div>
-                      <div className="flex items-center gap-2 ml-4 shrink-0">
-                        <Toggle checked={settingsResponseLimit} onChange={setSettingsResponseLimit} />
-                        {settingsResponseLimit && (
-                          <input
-                            type="number"
-                            value={settingsResponseLimitCount}
-                            onChange={(e) => setSettingsResponseLimitCount(e.target.value)}
-                            className="w-[80px] h-[28px] text-[12px] text-[#1a1a1a] border border-[#e4e2dc] rounded-[4px] px-2 bg-white focus:outline-none focus:border-[#1a1a1a] text-center"
-                          />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* INTEGRATIONS */}
-                <div className="mb-6">
-                  <div className="border border-[#e4e2dc] rounded-[6px] overflow-hidden bg-white">
-                    {/* Integrations */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <RiGitBranchLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Integrations</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Send responses to Zapier, Slack, Google Sheets, and more</div>
-                      </div>
-                      <button className="ml-4 flex items-center gap-1 text-[12px] font-medium text-[#1a1a1a] hover:text-[#4f46e5] transition-colors shrink-0 cursor-pointer">
-                        Set up
-                        <RiExternalLinkLine size={11} />
-                      </button>
-                    </div>
-                    {/* Webhook */}
-                    <div className="flex items-center px-4 py-[14px]">
-                      <RiArrowRightLine size={15} className="text-[#6a6a6a] shrink-0 mt-[1px]" />
-                      <div className="ml-[14px] flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Webhook</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">POST each submission payload to your own endpoint</div>
-                      </div>
-                      <Toggle checked={settingsWebhook} onChange={setSettingsWebhook} />
-                    </div>
-                  </div>
-                </div>
-
-                {/* DANGER ZONE */}
-                <div className="mb-6">
-                  <div className="border border-[#e4e2dc] rounded-[6px] overflow-hidden bg-white">
-                    {/* Danger zone header */}
-                    <div className="px-4 py-[11px] border-b border-[#e4e2dc]">
-                      <span className="text-[10px] font-semibold tracking-[0.8px] uppercase text-[#c0392b]">Danger Zone</span>
-                    </div>
-                    {/* Reset form */}
-                    <div className="flex items-center px-4 py-[14px] border-b border-[#e4e2dc]">
-                      <div className="flex-1 min-w-0 pr-4">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Reset form</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Remove all unsaved changes and reset to last published version</div>
-                      </div>
-                      <button className="ml-4 shrink-0 h-[28px] px-3 text-[12px] font-medium text-[#1a1a1a] border border-[#e4e2dc] rounded-[4px] bg-white hover:bg-[#f5f4f0] transition-colors cursor-pointer">
-                        Reset form
-                      </button>
-                    </div>
-                    {/* Delete form */}
-                    <div className="flex items-center px-4 py-[14px]">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-[#1a1a1a] leading-[20px]">Delete form</div>
-                        <div className="text-[12px] text-[#7a7a72] leading-[17px]">Permanently delete this form and all its responses. Cannot be undone.</div>
-                      </div>
-                      <button className="ml-4 shrink-0 h-[28px] px-3 text-[12px] font-medium text-[#c0392b] border border-[#f5c6c2] rounded-[4px] bg-[#fff5f5] hover:bg-[#fee2e2] transition-colors cursor-pointer">
-                        Delete form
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-            </div>
+            <motion.div
+              key="settings-tab"
+              className="flex-1 flex flex-col min-h-0 overflow-hidden"
+              {...BUILDER_TAB_MOTION}
+            >
+            <FormBuilderSettingsPanel
+              settingsAutoAdvance={settingsAutoAdvance}
+              setSettingsAutoAdvance={setSettingsAutoAdvance}
+              settingsBackButton={settingsBackButton}
+              setSettingsBackButton={setSettingsBackButton}
+              settingsResubmission={settingsResubmission}
+              setSettingsResubmission={setSettingsResubmission}
+              settingsConfirmationEmail={settingsConfirmationEmail}
+              setSettingsConfirmationEmail={setSettingsConfirmationEmail}
+              settingsResponseLimit={settingsResponseLimit}
+              setSettingsResponseLimit={setSettingsResponseLimit}
+              settingsResponseLimitCount={settingsResponseLimitCount}
+              setSettingsResponseLimitCount={setSettingsResponseLimitCount}
+              onDiscardDraft={restoreFromBuilderBaseline}
+              activeFormId={activeFormId}
+              formTitle={loadedFormTitle ?? location.state?.formTitle ?? 'Untitled Form'}
+            />
+            </motion.div>
           ) : !hasScreens ? (
-            /* Empty state */
+            <motion.div
+              key="content-empty-tab"
+              className="flex-1 flex flex-col min-h-0 overflow-hidden"
+              {...BUILDER_TAB_MOTION}
+            >
+            {/* Empty state */}
             <div
               className="flex-1 flex items-center justify-center overflow-hidden transition-colors duration-300"
-              style={{ backgroundColor: isPreview ? '#f5f4f0' : designBackground }}
+              style={{ backgroundColor: isPreview ? '#f5f4f0' : builderTheme.canvasBackground }}
             >
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
@@ -8309,7 +6370,13 @@ const FormBuilderPage = () => {
                 </button>
               </motion.div>
             </div>
+            </motion.div>
           ) : activeTab === 'logic' ? (
+            <motion.div
+              key="logic-tab"
+              className="flex-1 flex flex-col min-h-0 overflow-hidden"
+              {...BUILDER_TAB_MOTION}
+            >
             <div
               className="flex-1 flex flex-col min-h-0 bg-[#f2f2f0] overflow-hidden"
               style={{ fontFamily: "'DM Sans', sans-serif" }}
@@ -8664,14 +6731,21 @@ const FormBuilderPage = () => {
                             const edgeObstacles = logicObstacles.filter(
                               (o) => o.id !== c.from && o.id !== c.to
                             );
-                            const pathMeta = buildLogicConnectionPath(x0, y0, x1, y1, edgeObstacles, {
+                            const stubbed = applyLogicPortStubs(x0, y0, x1, y1);
+                            const pathMeta = buildLogicConnectionPath(
+                              stubbed.x0,
+                              stubbed.y0,
+                              stubbed.x1,
+                              stubbed.y1,
+                              edgeObstacles,
+                              {
                               prefixWaypoints,
                               suffixWaypoints,
                             });
                             const edgeKey = `${c.from}-${c.to}`;
                             return (
                               <LogicEdgePathGroup
-                                key={`edge-${c.from}-${c.to}`}
+                                key={`edge-${c.from}-${c.to}-${c.kind ?? 'flow'}`}
                                 d={pathMeta.d}
                                 edgeKey={edgeKey}
                                 kind={c.kind}
@@ -8691,9 +6765,10 @@ const FormBuilderPage = () => {
                               const dragObstacles = logicObstacles.filter(
                                 (o) => o.id !== logicConnectDrag.fromId
                               );
+                              const outY = a.outY ?? a.portY;
                               const pathMeta = buildLogicConnectionSegment(
                                 a.outX,
-                                a.portY,
+                                outY,
                                 logicConnectDrag.x1,
                                 logicConnectDrag.y1,
                                 dragObstacles
@@ -8723,14 +6798,21 @@ const FormBuilderPage = () => {
                             const edgeObstacles = logicObstacles.filter(
                               (o) => o.id !== c.from && o.id !== c.to
                             );
-                            const pathMeta = buildLogicConnectionPath(x0, y0, x1, y1, edgeObstacles, {
+                            const stubbed = applyLogicPortStubs(x0, y0, x1, y1);
+                            const pathMeta = buildLogicConnectionPath(
+                              stubbed.x0,
+                              stubbed.y0,
+                              stubbed.x1,
+                              stubbed.y1,
+                              edgeObstacles,
+                              {
                               prefixWaypoints,
                               suffixWaypoints,
                             });
                             const edgeKey = `${c.from}-${c.to}`;
                             return (
                               <LogicEdgePathGroup
-                                key={`${c.from}-${c.to}-${i}-hit`}
+                                key={`${c.from}-${c.to}-${c.kind ?? 'flow'}-${i}-hit`}
                                 d={pathMeta.d}
                                 edgeKey={edgeKey}
                                 kind={c.kind}
@@ -8779,7 +6861,7 @@ const FormBuilderPage = () => {
                           if (!hasKind) {
                             return (
                               <LogicEdgeLineDisconnectButton
-                                key={`logic-edge-controls-${c.from}-${c.to}-${i}`}
+                                key={`logic-edge-controls-${c.from}-${c.to}-${c.kind ?? 'flow'}-${i}`}
                                 x={mid.x}
                                 y={mid.y}
                                 onDisconnect={() => removeLogicConnection(c.from, c.to)}
@@ -8819,12 +6901,18 @@ const FormBuilderPage = () => {
                 </div>
               )}
             </div>
+            </motion.div>
           ) : (
-            /* ── Scaled preview canvas ── */
+            <motion.div
+              key={activeTab === 'design' ? 'design-tab' : 'content-tab'}
+              className="flex-1 flex flex-col min-h-0 overflow-hidden"
+              {...BUILDER_TAB_MOTION}
+            >
+            {/* Scaled preview canvas */}
             <div
               ref={canvasContainerRef}
               className="flex-1 overflow-hidden relative flex items-center justify-center transition-colors duration-300 p-10 min-h-0"
-              style={{ backgroundColor: isPreview ? '#f5f4f0' : designBackground }}
+              style={{ backgroundColor: isPreview ? '#f5f4f0' : builderTheme.canvasBackground }}
             >
               {/* Scaled form frame � page indicator + card + powered-by (Figma 2521:8332) */}
               <div
@@ -8853,7 +6941,7 @@ const FormBuilderPage = () => {
               )}
               <motion.div layout className="flex-1 min-h-0 flex flex-col w-full">
               <AnimatePresence mode="wait">
-                {showContentPanel && !isPreview ? (
+                {showBlockPickerOnCanvas ? (
                   /* ── Empty state while user selects a content block ── */
                   <motion.div
                     key="content-panel-empty"
@@ -8903,67 +6991,24 @@ const FormBuilderPage = () => {
                                   screenLabel: getScreenDeleteLabel(activeScreen),
                                 })
                               }
-                              fullCanvas={designLayoutStyle === 'fullCanvas'}
-                              cardColor={hexToRgba(designCardColor, designCardOpacity)}
-                              cardImage={designCardImage}
-                              ctaConfig={{ ctaButtonLabel, ctaHeadingText, ctaHelperText, ctaDurationText, ctaButtonSize, ctaButtonStyle, ctaCornerRadius, ctaShowIcon, ctaHeadingSize, ctaBodySize, ctaFontWeight, ctaTextAlign, ctaPadding, ctaTextColor, ctaBtnColor, ctaLabelColor, ctaContentWidth, isEditingCard: isEditingCtaCard, onEditToggle: () => setIsEditingCtaCard((p) => !p), setCtaHeadingText, setCtaHelperText, setCtaDurationText }}
-                              headingConfig={{ headingText, subHeading, headingRequired, headingHidden, headingLevel, headingTextSize, headingAlignment, headingFontWeight, isEditingCard: isEditingHeadingCard, onEditToggle: () => setIsEditingHeadingCard(p => !p), setHeadingText, setSubHeading, headingAnswerText, setHeadingAnswerText }}
-                              descriptionConfig={{ descriptionContent, descriptionHidden, descriptionShowCharCount, descriptionCharLimit, descriptionFormatting, descriptionTextSize, descriptionAlignment }}
-                              imageConfig={{ imageHidden, imagePreview, imageAltText, imageCaption, imageLinkOnClick, imageLinkUrl, imageOpenInNewTab, imageAlignment, imageWidth, imageCornerRadius, imageQuestion, imageDescription, onRemoveImage: () => { setImagePreview(null); setImageFileName(''); } }}
+                              fullCanvas={builderTheme.fullCanvas}
+                              cardColor={builderTheme.cardColor}
+                              cardImage={builderTheme.cardImage}
+                              accentColor={builderTheme.accentColor}
+                              textColor={builderTheme.textColor}
+                              {...canvasFieldConfigs}
                               imageFileInputRef={imageFileInputRef}
-                              videoConfig={{ videoUrl, videoCaption, videoWidth, videoAspectRatio, videoCornerRadius, videoQuestion, videoDescription, videoRequired, videoHidden, videoLoop, videoAutoplay, videoShowControls, videoSource }}
-                              contactConfig={{ contactQuestion, contactHelperText, contactFields, contactRequired }}
-                              addressConfig={{ addressQuestion, addressHelperText, addressFields, addressRequired }}
-                              workConfig={{ workQuestion, workHelperText, workFields, workRequired }}
-                              shortTextConfig={{ shortTextQuestion, shortTextHelperText, shortTextPlaceholder, shortTextMaxChars, shortTextMinChars, shortTextValidation, shortTextAlign, shortTextSize, shortTextRequired, shortTextHidden }}
-                              shortTextResponseQualityConfig={{
-                                enabled: shortTextResponseQualityEnabled,
-                                options: shortTextResponseQualityOptions,
-                              }}
-                              longTextConfig={{ longTextQuestion, longTextHelperText, longTextPlaceholder, longTextMaxChars, longTextMinChars, longTextValidation, longTextAlign, longTextSize, longTextRequired, longTextHidden }}
-                              responseQualityConfig={{ enabled: responseQualityEnabled, options: responseQualityOptions }}
-                              singleConfig={{ singleQuestion, singleHelperText, singleOptions, singleLayout, singleOptionHeight, singleRequired, singleAllowOther, singleRandomize, singleMultipleSelect, singleMinChoices, singleMaxChoices, singleShowKeyboardHints, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowSingleConfigPanel(true), 300); } }}
-                              multipleConfig={{ multipleQuestion, multipleHelperText, multipleOptions, multipleLayout, multipleRequired, multipleAllowOther, multipleRandomize, multipleMultipleSelect, multipleMinChoices, multipleMaxChoices, multipleShowKeyboardHints, multipleOptionHeight, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowMultipleConfigPanel(true), 300); } }}
-                              mediaConfig={{ mediaQuestion, mediaHelperText, mediaOptions, mediaAllowMultiple, mediaRequired, mediaRandomiseOrder, mediaMinChoices, mediaMaxChoices, mediaLayout, mediaOptionHeight }}
-                              mapConfig={{
-                                mapQuestion,
-                                mapHelperText,
-                                mapType,
-                                mapZoom,
-                                mapDefaultLat,
-                                mapDefaultLng,
-                                mapDefaultAddress,
-                                mapAllowPinMovement,
-                                mapShowSearchBar,
-                                mapRestrictRadius,
-                                mapRestrictRadiusKm,
-                                mapPinLabel,
-                                mapHeight,
-                                mapRequired,
-                                mapHidden,
-                              }}
-                              captchaConfig={{ captchaProvider, captchaSiteKey, captchaEnabled, captchaVisibility }}
-                              multiImageConfig={{ question: multiImageQuestion, helperText: multiImageHelperText, maxFiles: multiImageMaxFiles, required: multiImageRequired, multipleFiles: multiImageMultipleFiles, maxFileSize: multiImageMaxFileSize }}
-                              uploadConfig={{ question: uploadQuestion, helperText: uploadHelperText, maxFileSize: uploadMaxFileSize }}
-                              ratingConfig={{ ratingQuestion, ratingRequired, ratingUseScale, ratingUseSlider, ratingMaxRating, ratingStyle, ratingLowLabel, ratingHighLabel, ratingShowLabels, ratingIconSize }}
-                              dateConfig={{ dateQuestion, dateHelperText, dateRequired }}
-                              timeConfig={{
-                                timeQuestion,
-                                timeHelperText,
-                                timeRequired,
-                                timeUse12h,
-                                timeShowSeconds,
-                                timeMinTime,
-                                timeMaxTime,
-                              }}
+                              onConfigure={handleConfigureFromCanvas}
                               isPreviewMode={isPreview}
-                              onPreviewAdvance={goPreviewNext}
-                              previewStepNav={previewStepNavEl}
-                              previewScreenValidatorRef={previewScreenValidatorRef}
-                            />
-                          </div>
-                        </motion.div>
-                      ) : (
+                            onPreviewAdvance={goPreviewNext}
+                            previewStepNav={previewStepNavEl}
+                            previewScreenValidatorRef={previewScreenValidatorRef}
+                            onPreviewSnapChange={handlePreviewSnapChange}
+                            previewScreenId={activeScreen.id}
+                          />
+                        </div>
+                      </motion.div>
+) : (
                         /* ── Default welcome card ── */
                         <motion.div
                           key="intro-screen"
@@ -9128,59 +7173,14 @@ const FormBuilderPage = () => {
                                 screenLabel: getScreenDeleteLabel(activeScreen),
                               })
                             }
-                            fullCanvas={designLayoutStyle === 'fullCanvas'}
-                            cardColor={hexToRgba(designCardColor, designCardOpacity)}
-                            cardImage={designCardImage}
-                            ctaConfig={{ ctaButtonLabel, ctaHeadingText, ctaHelperText, ctaDurationText, ctaButtonSize, ctaButtonStyle, ctaCornerRadius, ctaShowIcon, ctaHeadingSize, ctaBodySize, ctaFontWeight, ctaTextAlign, ctaPadding, ctaTextColor, ctaBtnColor, ctaLabelColor, ctaContentWidth, isEditingCard: isEditingCtaCard, onEditToggle: () => setIsEditingCtaCard((p) => !p), setCtaHeadingText, setCtaHelperText, setCtaDurationText }}
-                            headingConfig={{ headingText, subHeading, headingRequired, headingHidden, headingLevel, headingTextSize, headingAlignment, headingFontWeight, isEditingCard: isEditingHeadingCard, onEditToggle: () => setIsEditingHeadingCard(p => !p), setHeadingText, setSubHeading, headingAnswerText, setHeadingAnswerText }}
-                            descriptionConfig={{ descriptionContent, descriptionHidden, descriptionShowCharCount, descriptionCharLimit, descriptionFormatting, descriptionTextSize, descriptionAlignment }}
-                            imageConfig={{ imageHidden, imagePreview, imageAltText, imageCaption, imageLinkOnClick, imageLinkUrl, imageOpenInNewTab, imageAlignment, imageWidth, imageCornerRadius, imageQuestion, imageDescription, onRemoveImage: () => { setImagePreview(null); setImageFileName(''); } }}
+                            fullCanvas={builderTheme.fullCanvas}
+                            cardColor={builderTheme.cardColor}
+                            cardImage={builderTheme.cardImage}
+                            accentColor={builderTheme.accentColor}
+                            textColor={builderTheme.textColor}
+                            {...canvasFieldConfigs}
                             imageFileInputRef={imageFileInputRef}
-                            videoConfig={{ videoUrl, videoCaption, videoWidth, videoAspectRatio, videoCornerRadius, videoQuestion, videoDescription, videoRequired, videoHidden, videoLoop, videoAutoplay, videoShowControls, videoSource }}
-                            contactConfig={{ contactQuestion, contactHelperText, contactFields, contactRequired }}
-                            addressConfig={{ addressQuestion, addressHelperText, addressFields, addressRequired }}
-                            workConfig={{ workQuestion, workHelperText, workFields, workRequired }}
-                            shortTextConfig={{ shortTextQuestion, shortTextHelperText, shortTextPlaceholder, shortTextMaxChars, shortTextMinChars, shortTextValidation, shortTextAlign, shortTextSize, shortTextRequired, shortTextHidden }}
-                            shortTextResponseQualityConfig={{
-                              enabled: shortTextResponseQualityEnabled,
-                              options: shortTextResponseQualityOptions,
-                            }}
-                            longTextConfig={{ longTextQuestion, longTextHelperText, longTextPlaceholder, longTextMaxChars, longTextMinChars, longTextValidation, longTextAlign, longTextSize, longTextRequired, longTextHidden }}
-                            responseQualityConfig={{ enabled: responseQualityEnabled, options: responseQualityOptions }}
-                            singleConfig={{ singleQuestion, singleHelperText, singleOptions, singleLayout, singleOptionHeight, singleRequired, singleAllowOther, singleRandomize, singleMultipleSelect, singleMinChoices, singleMaxChoices, singleShowKeyboardHints, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowSingleConfigPanel(true), 300); } }}
-                            multipleConfig={{ multipleQuestion, multipleHelperText, multipleOptions, multipleLayout, multipleRequired, multipleAllowOther, multipleRandomize, multipleMultipleSelect, multipleMinChoices, multipleMaxChoices, multipleShowKeyboardHints, multipleOptionHeight, onOpenPanel: () => { closeAllRightPanels(); setTimeout(() => setShowMultipleConfigPanel(true), 300); } }}
-                            mediaConfig={{ mediaQuestion, mediaHelperText, mediaOptions, mediaAllowMultiple, mediaRequired, mediaRandomiseOrder, mediaMinChoices, mediaMaxChoices, mediaLayout, mediaOptionHeight }}
-                            mapConfig={{
-                                mapQuestion,
-                                mapHelperText,
-                                mapType,
-                                mapZoom,
-                                mapDefaultLat,
-                                mapDefaultLng,
-                                mapDefaultAddress,
-                                mapAllowPinMovement,
-                                mapShowSearchBar,
-                                mapRestrictRadius,
-                                mapRestrictRadiusKm,
-                                mapPinLabel,
-                                mapHeight,
-                                mapRequired,
-                                mapHidden,
-                              }}
-                            captchaConfig={{ captchaProvider, captchaSiteKey, captchaEnabled, captchaVisibility }}
-                            multiImageConfig={{ question: multiImageQuestion, helperText: multiImageHelperText, maxFiles: multiImageMaxFiles, required: multiImageRequired, multipleFiles: multiImageMultipleFiles, maxFileSize: multiImageMaxFileSize }}
-                            uploadConfig={{ question: uploadQuestion, helperText: uploadHelperText, maxFileSize: uploadMaxFileSize }}
-                            ratingConfig={{ ratingQuestion, ratingRequired, ratingUseScale, ratingUseSlider, ratingMaxRating, ratingStyle, ratingLowLabel, ratingHighLabel, ratingShowLabels, ratingIconSize }}
-                            dateConfig={{ dateQuestion, dateHelperText, dateRequired }}
-                            timeConfig={{
-                              timeQuestion,
-                              timeHelperText,
-                              timeRequired,
-                              timeUse12h,
-                              timeShowSeconds,
-                              timeMinTime,
-                              timeMaxTime,
-                            }}
+                            onConfigure={handleConfigureFromCanvas}
                             isPreviewMode={isPreview}
                             onPreviewAdvance={goPreviewNext}
                             previewStepNav={previewStepNavEl}
@@ -9365,7 +7365,10 @@ const FormBuilderPage = () => {
                 </div>
               </div>
             </div>
+            </motion.div>
           )}
+          </AnimatePresence>
+          </div>
 
           {/* Footer — screen navigation (hidden on Logic tab; preview uses in-card Back/Next) */}
           {!isPreview && activeTab !== 'logic' && (
@@ -9487,4902 +7490,7 @@ const FormBuilderPage = () => {
 
         </div>
 
-        {/* ── Configure panel (right) ── */}
-        {!isPreview && <>
-        <AnimatePresence>
-        {showConfigPanel && (
-          <motion.div
-            key="config-panel"
-            initial={skipPanelEnterRef.current ? false : { width: 0 }}
-            animate={{ width: 280 }}
-            exit={{ width: 0 }}
-            transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-            className="shrink-0 overflow-hidden"
-          >
-          <div
-            className="w-[280px] h-full bg-[#f7f7f8] border-l border-[#e5e3dc] flex flex-col"
-            style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}
-          >
-            {/* Header */}
-            <div className="h-[41px] border-b border-[#e5e3dc] flex items-center justify-between px-4 shrink-0">
-              <span className="text-[14px] font-semibold text-black">Configure</span>
-              <button
-                onClick={() => setShowConfigPanel(false)}
-                className="w-[22px] h-[22px] bg-[#f4f3ef] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e9e7e0] transition-colors"
-              >
-                <RiCloseLine size={14} className="text-[#6a6a6a]" aria-hidden />
-              </button>
-            </div>
-
-            {/* Scrollable content */}
-            <div className="flex-1 overflow-y-auto">
-              {/* Essentials section */}
-              <div className="p-[14px] flex flex-col gap-4">
-                {/* Section heading */}
-                <button
-                  onClick={() => toggleSection('essentials')}
-                  className="flex items-center justify-between w-full cursor-pointer"
-                >
-                  <span className="text-[#414141] text-[10px] font-semibold tracking-[0.7px] uppercase">
-                    Essentials
-                  </span>
-                  <motion.span
-                    animate={{ rotate: sections.essentials ? 180 : 0 }}
-                    transition={{ duration: 0.2, ease: 'easeInOut' }}
-                    className="flex items-center shrink-0"
-                  >
-                    <RiArrowDownSLine size={16} className="text-[#414141]" />
-                  </motion.span>
-                </button>
-
-                {/* Essentials grid */}
-                <AnimatePresence initial={false}>
-                  {sections.essentials && (
-                    <motion.div
-                      key="essentials-grid"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                      style={{ overflow: 'hidden' }}
-                    >
-                      <motion.div
-                        className={CONFIGURE_TILE_GRID}
-                        variants={{ show: { transition: { staggerChildren: 0.035 } }, hidden: {} }}
-                        initial="hidden"
-                        animate="show"
-                      >
-                        {ESSENTIALS.map(({ label, Icon }) => {
-                          const isActive = activeScreen?.type === 'intro' && introEssential === label;
-                          return (
-                            <motion.button
-                              key={label}
-                              variants={{
-                                hidden: { opacity: 0, y: 5 },
-                                show: { opacity: 1, y: 0 },
-                              }}
-                              transition={{ duration: 0.15, ease: 'easeOut' }}
-                              onClick={() => {
-                                if (activeScreen?.type === 'intro')
-                                  setIntroEssential((prev) => (prev === label ? null : label));
-                              }}
-                              className={`${CONFIGURE_TILE_BASE} ${
-                                isActive
-                                  ? 'bg-[#eef2ff] border-indigo-300'
-                                  : 'bg-white border-[#e5e3dc] hover:bg-[#f9f8f6]'
-                              }`}
-                            >
-                              <Icon size={12} className={`shrink-0 ${isActive ? 'text-indigo-500' : 'text-[#6a6a6a]'}`} />
-                              <span className={`text-[9px] leading-[10px] text-center ${isActive ? 'text-indigo-600 font-medium' : 'text-[#6a6a6a]'}`}>
-                                {label}
-                              </span>
-                            </motion.button>
-                          );
-                        })}
-                      </motion.div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Accordion sections */}
-              {ACCORDION_SECTIONS.filter(({ key }) =>
-                !(activeScreen?.type === 'intro' && key === 'questionTemplates')
-              ).map(({ key, label }) => (
-                <div key={key} className="border-t border-[rgba(0,0,0,0.09)]">
-                  <button
-                    onClick={() => toggleSection(key)}
-                    className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                  >
-                    <span className="text-[#686868] text-[9.5px] font-semibold tracking-[1.235px] uppercase">
-                      {label}
-                    </span>
-                    <motion.span
-                      animate={{ rotate: sections[key] ? 180 : 0 }}
-                      transition={{ duration: 0.2, ease: 'easeInOut' }}
-                      className="flex items-center shrink-0"
-                    >
-                      <RiArrowDownSLine size={12} className="text-[#686868]" />
-                    </motion.span>
-                  </button>
-
-                  {/* Question Templates expanded content */}
-                  <AnimatePresence initial={false}>
-                    {key === 'questionTemplates' && sections.questionTemplates && (
-                      <motion.div
-                        key="qt-content"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        <div className="pb-2">
-                          {QUESTION_TEMPLATE_CATEGORIES.map(({ label: catLabel, items }, idx) => (
-                            <div key={catLabel}>
-                              {idx > 0 && (
-                                <div className="h-px bg-[#e5e3dc] mx-[14px]" />
-                              )}
-                              <div className="p-[14px] flex flex-col gap-4">
-                                <span className="text-[#414141] text-[10px] font-semibold tracking-[0.7px] uppercase leading-normal">
-                                  {catLabel}
-                                </span>
-                                <motion.div
-                                  className={CONFIGURE_TILE_GRID}
-                                  variants={{ show: { transition: { staggerChildren: 0.04 } }, hidden: {} }}
-                                  initial="hidden"
-                                  animate="show"
-                                >
-                                  {items.map(({ label: itemLabel, Icon }) => {
-                                    const isSelected = selectedTemplate === `${catLabel}:${itemLabel}`;
-                                    return (
-                                      <motion.button
-                                        key={itemLabel}
-                                        variants={{
-                                          hidden: { opacity: 0, y: 5 },
-                                          show: { opacity: 1, y: 0 },
-                                        }}
-                                        transition={{ duration: 0.15, ease: 'easeOut' }}
-                                        onClick={() => setSelectedTemplate(isSelected ? null : `${catLabel}:${itemLabel}`)}
-                                        className={`${CONFIGURE_TILE_BASE} ${
-                                          isSelected
-                                            ? 'bg-[#ebeaff] border-[#a39eff]'
-                                            : 'bg-white border-[#e5e3dc] hover:bg-[#f9f8f6]'
-                                        }`}
-                                      >
-                                        <Icon
-                                          size={12}
-                                          className={`shrink-0 ${isSelected ? 'text-[#5b55e8]' : 'text-[#6a6a6a]'}`}
-                                        />
-                                        <span
-                                          className={`text-[9px] leading-[10px] text-center ${
-                                            isSelected ? 'text-black font-medium' : 'text-[#6a6a6a] font-normal'
-                                          }`}
-                                        >
-                                          {itemLabel}
-                                        </span>
-                                      </motion.button>
-                                    );
-                                  })}
-                                </motion.div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {/* Field Settings expanded content */}
-                    {key === 'fieldSettings' && sections.fieldSettings && (
-                      <motion.div
-                        key="fs-content"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        <div className="flex flex-col gap-3 px-4 pt-[6px] pb-[14px]">
-                          {/* Required toggle */}
-                          {[
-                            { label: 'Required', value: welcomeRequired, setter: setWelcomeRequired },
-                            { label: 'Hidden', value: welcomeHidden, setter: setWelcomeHidden },
-                            { label: 'Read-only', value: welcomeReadOnly, setter: setWelcomeReadOnly },
-                          ].map(({ label: toggleLabel, value, setter }) => (
-                            <div key={toggleLabel} className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444] font-normal">{toggleLabel}</span>
-                              <button
-                                onClick={() => setter((p) => !p)}
-                                className={`relative w-[34px] h-[20px] rounded-[10px] transition-colors cursor-pointer shrink-0 appearance-none border-0 p-0 ${value ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}
-                              >
-                                <span
-                                  className={`absolute top-[3px] w-[14px] h-[14px] bg-white rounded-[7px] transition-all duration-200 ${value ? 'left-[17px]' : 'left-[3px]'}`}
-                                />
-                              </button>
-                            </div>
-                          ))}
-
-                          {/* Divider */}
-                          <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                          {/* Placeholder text */}
-                          <div className="flex flex-col gap-[6px]">
-                            <span className="text-[12px] text-[#444] font-normal">Placeholder text</span>
-                            <div className="bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.15)] rounded-[7px] px-[11px] py-[7px]">
-                              <input
-                                type="text"
-                                value={welcomePlaceholder}
-                                onChange={(e) => setWelcomePlaceholder(e.target.value)}
-                                className="w-full text-[12px] text-[#111] bg-transparent outline-none font-normal leading-normal"
-                                placeholder="Type your answer here…"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Helper text */}
-                          <div className="flex flex-col gap-[6px]">
-                            <span className="text-[12px] text-[#444] font-normal">Helper text</span>
-                            <div className="bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.15)] rounded-[7px] px-[11px] py-[9px] min-h-[60px]">
-                              <textarea
-                                value={welcomeHelperText}
-                                onChange={(e) => setWelcomeHelperText(e.target.value)}
-                                rows={3}
-                                className="w-full text-[12px] text-[#111] bg-transparent outline-none resize-none font-normal leading-[18.6px]"
-                                placeholder="Press Enter to continue"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Divider */}
-                          <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                          {/* Min length */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] text-[#444] font-normal">Min length</span>
-                            <div className="bg-[rgba(0,0,0,0.04)] flex gap-[6px] items-center px-[6px] py-[4px] rounded-[7px]">
-                              <button
-                                onClick={() => setWelcomeMinLength((v) => Math.max(0, v - 1))}
-                                className="bg-[rgba(255,255,255,0.8)] w-[20px] h-[20px] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-white transition-colors text-[14px] text-[#555] font-medium leading-none"
-                              >−</button>
-                              <span className="min-w-[28px] text-center text-[13px] font-medium text-[#111]">{welcomeMinLength}</span>
-                              <button
-                                onClick={() => setWelcomeMinLength((v) => Math.min(welcomeMaxLength, v + 1))}
-                                className="bg-[rgba(255,255,255,0.8)] w-[20px] h-[20px] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-white transition-colors text-[14px] text-[#555] font-medium leading-none"
-                              >+</button>
-                            </div>
-                          </div>
-
-                          {/* Max length */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] text-[#444] font-normal">Max length</span>
-                            <div className="bg-[rgba(0,0,0,0.04)] flex gap-[6px] items-center px-[6px] py-[4px] rounded-[7px]">
-                              <button
-                                onClick={() => setWelcomeMaxLength((v) => Math.max(welcomeMinLength, v - 1))}
-                                className="bg-[rgba(255,255,255,0.8)] w-[20px] h-[20px] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-white transition-colors text-[14px] text-[#555] font-medium leading-none"
-                              >−</button>
-                              <span className="min-w-[28px] text-center text-[13px] font-medium text-[#111]">{welcomeMaxLength}</span>
-                              <button
-                                onClick={() => setWelcomeMaxLength((v) => v + 1)}
-                                className="bg-[rgba(255,255,255,0.8)] w-[20px] h-[20px] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-white transition-colors text-[14px] text-[#555] font-medium leading-none"
-                              >+</button>
-                            </div>
-                          </div>
-
-                          {/* Input type dropdown */}
-                          <div className="flex flex-col gap-[6px]" ref={welcomeInputTypeRef}>
-                            <span className="text-[12px] text-[#444] font-normal">Input type</span>
-                            <div>
-                              <button
-                                onClick={() => setWelcomeInputTypeOpen((p) => !p)}
-                                className={`w-full flex items-center justify-between bg-white border border-[rgba(0,0,0,0.2)] pl-[11px] pr-[10px] py-[9px] cursor-pointer transition-colors ${welcomeInputTypeOpen ? 'rounded-t-[6px]' : 'rounded-[6px]'}`}
-                              >
-                                <span className="text-[12.5px] text-[#1a1a1a] font-normal">{welcomeInputType}</span>
-                                <RiArrowDownSLine size={14} className={`text-[#666] transition-transform duration-200 ${welcomeInputTypeOpen ? 'rotate-180' : ''}`} />
-                              </button>
-                              <AnimatePresence>
-                                {welcomeInputTypeOpen && (
-                                  <motion.div
-                                    key="input-type-dropdown"
-                                    initial={{ height: 0, opacity: 0 }}
-                                    animate={{ height: 'auto', opacity: 1 }}
-                                    exit={{ height: 0, opacity: 0 }}
-                                    transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-                                    style={{ overflow: 'hidden' }}
-                                    className="w-full bg-white border border-[#b0b0ae] border-t-0 rounded-b-[6px] shadow-[0px_8px_24px_0px_rgba(0,0,0,0.1)]"
-                                  >
-                                    {['Free text', 'Number', 'Email', 'URL', 'Phone', 'Password'].map((option) => (
-                                      <button
-                                        key={option}
-                                        onClick={() => { setWelcomeInputType(option); setWelcomeInputTypeOpen(false); }}
-                                        className={`w-full text-left px-[10px] py-[8px] text-[12.5px] cursor-pointer transition-colors ${
-                                          option === welcomeInputType
-                                            ? 'bg-[#ebebea] font-medium text-[#1a1a1a]'
-                                            : 'font-normal text-[#1a1a1a] hover:bg-[#f5f5f5]'
-                                        }`}
-                                      >
-                                        {option}
-                                      </button>
-                                    ))}
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {/* Appearance expanded content */}
-                    {key === 'appearance' && sections.appearance && (
-                      <motion.div
-                        key="appearance-content"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        <div className="flex flex-col gap-3 px-4 pt-[6px] pb-[14px]">
-                          {/* Text size */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] text-[#444] font-normal">Text size</span>
-                            <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] h-[31px] p-[2px] rounded-[7px] w-[140px]">
-                              {['S', 'M', 'L'].map((size) => (
-                                <button
-                                  key={size}
-                                  onClick={() => setWelcomeTextSize(size)}
-                                  className={`flex items-center justify-center rounded-[5px] text-[11.5px] cursor-pointer transition-colors ${
-                                    welcomeTextSize === size
-                                      ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                      : 'text-[#777] font-normal hover:text-[#444]'
-                                  }`}
-                                >
-                                  {size}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Alignment */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] text-[#444] font-normal">Alignment</span>
-                            <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] h-[29px] p-[2px] rounded-[7px] w-[140px]">
-                              {[
-                                { alignKey: 'left', Icon: RiAlignLeft },
-                                { alignKey: 'center', Icon: RiAlignCenter },
-                                { alignKey: 'right', Icon: RiAlignRight },
-                              ].map(({ alignKey, Icon: AlignIcon }) => (
-                                <button
-                                  key={alignKey}
-                                  onClick={() => setWelcomeAlignment(alignKey)}
-                                  className={`flex items-center justify-center rounded-[5px] cursor-pointer transition-colors ${
-                                    welcomeAlignment === alignKey
-                                      ? 'bg-white border border-[rgba(0,0,0,0.09)] shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                      : 'hover:bg-[rgba(255,255,255,0.5)]'
-                                  }`}
-                                >
-                                  <AlignIcon size={13} className={welcomeAlignment === alignKey ? 'text-[#111]' : 'text-[#777]'} />
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-
-                  </AnimatePresence>
-                </div>
-              ))}
-            </div>
-          </div>
-          </motion.div>
-        )}
-        </AnimatePresence>
-
-        {/* ── Content panel (right) – shown when Add Screen is clicked after intro ── */}
-        <AnimatePresence>
-          {showContentPanel && (
-            <motion.div
-              key="content-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-            <div
-              className="w-[280px] h-full bg-[#f7f7f8] border-l border-[#e5e3dc] flex flex-col"
-              style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.1)' }}
-            >
-              {/* Header */}
-              <div className="h-[41px] border-b border-[#e5e3dc] flex items-center justify-between px-4 shrink-0">
-                <span
-                  className="text-[14px] font-semibold text-black"
-                  style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-                >
-                  Content
-                </span>
-                <button
-                  onClick={() => setShowContentPanel(false)}
-                  className="w-[22px] h-[22px] bg-[#f4f3ef] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e9e7e0] transition-colors"
-                >
-                  <RiCloseLine size={14} className="text-[#6a6a6a] shrink-0" aria-hidden />
-                </button>
-              </div>
-
-              {/* Scrollable sections */}
-              <div className="flex-1 overflow-y-auto">
-                {CONTENT_SECTIONS.map(({ key, label, items }, index) => (
-                  <div key={key}>
-                    {index > 0 && (
-                      <div className="h-px bg-[#e5e3dc] mx-[6px]" />
-                    )}
-                    <div className="p-[14px] flex flex-col gap-[16px]">
-                      {/* Section header row */}
-                      <button
-                        onClick={() => toggleContentSection(key)}
-                        className="flex items-center justify-between w-full cursor-pointer px-[2px]"
-                      >
-                        <span
-                          className="text-[#414141] text-[10px] font-semibold tracking-[0.7px] uppercase leading-normal"
-                          style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-                        >
-                          {label}
-                        </span>
-                        <motion.span
-                          animate={{ rotate: openContentSections[key] ? 0 : 180 }}
-                          transition={{ duration: 0.2, ease: 'easeInOut' }}
-                          className="flex items-center shrink-0"
-                        >
-                          <PiCaretCircleUp size={16} className="text-[#414141]" />
-                        </motion.span>
-                      </button>
-
-                      {/* Items grid */}
-                      <AnimatePresence initial={false}>
-                        {openContentSections[key] && (
-                          <motion.div
-                            key={`${key}-grid`}
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: 'auto', opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                            style={{ overflow: 'hidden' }}
-                          >
-                            <motion.div
-                              className={CONFIGURE_TILE_GRID}
-                              variants={{
-                                show: { transition: { staggerChildren: 0.04 } },
-                                hidden: {},
-                              }}
-                              initial="hidden"
-                              animate="show"
-                            >
-                              {items.map(({ label: itemLabel, Icon }) => (
-                                <motion.button
-                                  key={itemLabel}
-                                  variants={{
-                                    hidden: { opacity: 0, y: 6 },
-                                    show: { opacity: 1, y: 0 },
-                                  }}
-                                  transition={{ duration: 0.15, ease: 'easeOut' }}
-                                  onClick={() => addContentScreen(key, itemLabel)}
-                                  className={`${CONFIGURE_TILE_BASE} bg-white border-[#e5e3dc] hover:bg-[#f4f3ef] active:bg-[#ebeaff] active:border-[#a39eff]`}
-                                >
-                                  <Icon size={12} className="shrink-0 text-[#6a6a6a]" />
-                                  {itemLabel.length > 13 ? (
-                                    <div
-                                      className="label-marquee text-[9px] leading-[10px] text-[#6a6a6a] font-normal"
-                                      style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-                                    >
-                                      <span>{itemLabel}</span>
-                                    </div>
-                                  ) : (
-                                    <span
-                                      className="text-[9px] leading-[10px] text-center whitespace-nowrap text-[#6a6a6a] font-normal"
-                                      style={{ fontFamily: "'DM Sans', sans-serif", fontVariationSettings: "'opsz' 14" }}
-                                    >
-                                      {itemLabel}
-                                    </span>
-                                  )}
-                                </motion.button>
-                              ))}
-                            </motion.div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── CTA Configure panel (right) ── */}
-        <AnimatePresence>
-          {showCtaConfigPanel && (
-            <motion.div
-              key="cta-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div
-                className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col"
-                style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}
-              >
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span
-                    className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]"
-                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                  >
-                    Configure
-                  </span>
-                  <button
-                    onClick={() => setShowCtaConfigPanel(false)}
-                    className="w-[20px] h-[20px] bg-[#f0eeea] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors"
-                  >
-                    <RiCloseLine size={10} className="text-[#6a6a6a] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                {/* Scrollable content */}
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── BUTTON section ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setCtaSections((p) => ({ ...p, button: !p.button }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span
-                        className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]"
-                        style={{ fontFamily: "'DM Sans', sans-serif" }}
-                      >
-                        BUTTON
-                      </span>
-                      <motion.span
-                        animate={{ rotate: ctaSections.button ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {ctaSections.button && (
-                        <motion.div
-                          key="cta-btn-content"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col gap-3 px-4 pt-[6px] pb-[14px]">
-
-                            {/* Preview */}
-                            <div className="flex flex-col gap-[10px]">
-                              <span
-                                className="text-[10px] font-semibold tracking-[0.9px] uppercase text-[#8c8c8a]"
-                                style={{ fontFamily: "'Inter', sans-serif" }}
-                              >
-                                PREVIEW
-                              </span>
-                              <div>
-                                <button
-                                  className="flex items-center justify-center gap-[6px] px-4 py-2 text-[13px] font-medium"
-                                  style={{
-                                    background:
-                                      ctaButtonStyle === 'Filled'
-                                        ? ctaBtnColor
-                                        : 'transparent',
-                                    color:
-                                      ctaButtonStyle === 'Ghost'
-                                        ? ctaBtnColor
-                                        : (ctaTextColor ?? (ctaLabelColor === 'black' ? '#111' : '#fff')),
-                                    borderRadius: `${ctaCornerRadius}px`,
-                                    border:
-                                      ctaButtonStyle === 'Outline' || ctaButtonStyle === 'Ghost'
-                                        ? `1.5px solid ${ctaBtnColor}`
-                                        : 'none',
-                                    fontFamily: "'Inter', sans-serif",
-                                  }}
-                                >
-                                  <span>{ctaButtonLabel || 'Get started'}</span>
-                                  {ctaShowIcon && <RiArrowRightLine size={14} className="shrink-0" aria-hidden />}
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Button label */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Button label
-                              </span>
-                              <input
-                                type="text"
-                                value={ctaButtonLabel}
-                                onChange={(e) => setCtaButtonLabel(e.target.value)}
-                                className="w-full bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.15)] rounded-[7px] px-[11px] py-[7px] text-[12px] text-[#111] outline-none focus:border-[rgba(0,0,0,0.3)]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Button size */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Button size
-                              </span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-4 gap-[2px] p-[2px] rounded-[7px]">
-                                {['S', 'M', 'L', 'XL'].map((size) => (
-                                  <button
-                                    key={size}
-                                    onClick={() => setCtaButtonSize(size)}
-                                    className={`flex items-center justify-center py-[6px] rounded-[5px] text-[11.5px] transition-colors cursor-pointer ${
-                                      ctaButtonSize === size
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] shadow-[0px_1px_1px_rgba(0,0,0,0.08)] text-[#111] font-medium'
-                                        : 'text-[#777] font-normal hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {size}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Button style */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Button style
-                              </span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] p-[2px] rounded-[7px]">
-                                {['Filled', 'Outline', 'Ghost'].map((s) => (
-                                  <button
-                                    key={s}
-                                    onClick={() => setCtaButtonStyle(s)}
-                                    className={`flex items-center justify-center py-[6px] rounded-[5px] text-[11.5px] transition-colors cursor-pointer ${
-                                      ctaButtonStyle === s
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] shadow-[0px_1px_1px_rgba(0,0,0,0.08)] text-[#111] font-medium'
-                                        : 'text-[#777] font-normal hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {s}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Corner radius */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Corner radius
-                              </span>
-                              <div className="flex items-center gap-[10px]">
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={50}
-                                  value={ctaCornerRadius}
-                                  onChange={(e) => setCtaCornerRadius(Number(e.target.value))}
-                                  className="cta-slider flex-1"
-                                  style={{
-                                    background: `linear-gradient(to right, #111 ${(ctaCornerRadius / 50) * 100}%, #ddd ${(ctaCornerRadius / 50) * 100}%)`,
-                                  }}
-                                />
-                                <span
-                                  className="text-[11px] font-medium text-[#111] min-w-[20px] text-right shrink-0"
-                                  style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                >
-                                  {ctaCornerRadius}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Button color picker */}
-                            <div className="bg-[#fafaf9] border border-[#e5e5e3] rounded-[12px] overflow-hidden">
-                              <div className="px-[11px] pt-[11px] pb-[9px] flex flex-col gap-2">
-                                <span
-                                  className="text-[10px] font-semibold tracking-[0.9px] uppercase text-[#8c8c8a]"
-                                  style={{ fontFamily: "'Inter', sans-serif" }}
-                                >
-                                  BUTTON COLOR
-                                </span>
-                                {/* Quick swatches */}
-                                <div className="flex items-center gap-2 pt-[2px]">
-                                  {['#1a1a1a', '#3b82f6', '#ffffff'].map((color) => (
-                                    <button
-                                      key={color}
-                                      onClick={() => setCtaBtnColor(color)}
-                                      className="rounded-full shrink-0 cursor-pointer"
-                                      style={{
-                                        width: 28,
-                                        height: 28,
-                                        background: color,
-                                        border: color === '#ffffff' ? '1px solid #e5e5e3' : 'none',
-                                        outline: ctaBtnColor === color ? '2px solid #111' : 'none',
-                                        outlineOffset: 2,
-                                      }}
-                                    />
-                                  ))}
-                                  <button
-                                    onClick={() => setCtaBtnColorGridOpen((v) => !v)}
-                                    className="w-[28px] h-[28px] rounded-full border border-dashed border-[#c0c0be] flex items-center justify-center text-[#9a9a9a] text-[14px] leading-none cursor-pointer hover:bg-white/50"
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                                {/* Color grid – shown only after clicking + */}
-                                <AnimatePresence initial={false}>
-                                  {ctaBtnColorGridOpen && (
-                                    <motion.div
-                                      key="cta-btn-color-grid"
-                                      initial={{ height: 0, opacity: 0 }}
-                                      animate={{ height: 'auto', opacity: 1 }}
-                                      exit={{ height: 0, opacity: 0 }}
-                                      transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
-                                      style={{ overflow: 'hidden' }}
-                                    >
-                                      <div className="bg-white border border-[#e5e5e3] rounded-[8px] p-[11px] flex flex-col gap-2">
-                                        <div className="grid grid-cols-8 gap-1">
-                                          {CTA_COLOR_PALETTE.flat().map((color, idx) => (
-                                            <button
-                                              key={idx}
-                                              onClick={() => {
-                                                setCtaBtnColor(color);
-                                                setCtaBtnColorGridOpen(false);
-                                              }}
-                                              className="aspect-square rounded-[3px] cursor-pointer hover:scale-110 transition-transform"
-                                              style={{
-                                                background: color,
-                                                border:
-                                                  idx === 0
-                                                    ? '1px solid #d8d8d6'
-                                                    : '1px solid rgba(0,0,0,0.07)',
-                                                outline: ctaBtnColor === color ? '2px solid #1a1a1a' : 'none',
-                                                outlineOffset: 1,
-                                              }}
-                                            />
-                                          ))}
-                                        </div>
-                                        {/* Hex input row */}
-                                        <div className="border-t border-[#ebebea] pt-[9px] flex items-center gap-[6px]">
-                                          <div
-                                            className="w-[22px] h-[22px] rounded-[4px] border border-[#d8d8d6] shrink-0"
-                                            style={{ background: ctaBtnColor }}
-                                          />
-                                          <span
-                                            className="text-[11.5px] text-[#9a9a9a] shrink-0"
-                                            style={{ fontFamily: 'Courier New, monospace' }}
-                                          >
-                                            #
-                                          </span>
-                                          <input
-                                            type="text"
-                                            value={ctaBtnColor.replace('#', '').toUpperCase()}
-                                            onChange={(e) => {
-                                              const val = e.target.value;
-                                              if (/^[0-9A-Fa-f]{0,6}$/.test(val)) {
-                                                setCtaBtnColor('#' + val);
-                                              }
-                                            }}
-                                            className="flex-1 text-[11.5px] text-[#9a9a9a] uppercase outline-none bg-transparent min-w-0"
-                                            style={{ fontFamily: 'Courier New, monospace' }}
-                                            maxLength={6}
-                                          />
-                                          <button className="px-2 py-1 border border-[#e0e0de] rounded-[4px] text-[10.5px] text-[#9a9a9a] shrink-0 cursor-pointer hover:bg-[#f5f5f5] transition-colors">
-                                            Custom
-                                          </button>
-                                        </div>
-                                      </div>
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                              </div>
-                            </div>
-
-                            {/* Text color picker */}
-                            <div className="bg-[#fafaf9] border border-[#e5e5e3] rounded-[12px] overflow-hidden">
-                              <div className="px-[11px] pt-[11px] pb-[9px] flex flex-col gap-2">
-                                <span
-                                  className="text-[10px] font-semibold tracking-[0.9px] uppercase text-[#8c8c8a]"
-                                  style={{ fontFamily: "'Inter', sans-serif" }}
-                                >
-                                  TEXT COLOR
-                                </span>
-                                {/* Quick swatches */}
-                                <div className="flex items-center gap-2 pt-[2px]">
-                                  {['#3b82f6', '#1a1a1a', '#ffffff'].map((color) => (
-                                    <button
-                                      key={color}
-                                      onClick={() => setCtaTextColor(color)}
-                                      className="rounded-full shrink-0 cursor-pointer"
-                                      style={{
-                                        width: 28,
-                                        height: 28,
-                                        background: color,
-                                        border: color === '#ffffff' ? '1px solid #e5e5e3' : 'none',
-                                        outline: ctaTextColor === color ? '2px solid #111' : 'none',
-                                        outlineOffset: 2,
-                                      }}
-                                    />
-                                  ))}
-                                  <button
-                                    onClick={() => setCtaColorGridOpen((v) => !v)}
-                                    className="w-[28px] h-[28px] rounded-full border border-dashed border-[#c0c0be] flex items-center justify-center text-[#9a9a9a] text-[14px] leading-none cursor-pointer hover:bg-white/50"
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                                {/* Color grid – shown only after clicking + */}
-                                <AnimatePresence initial={false}>
-                                  {ctaColorGridOpen && (
-                                    <motion.div
-                                      key="cta-color-grid"
-                                      initial={{ height: 0, opacity: 0 }}
-                                      animate={{ height: 'auto', opacity: 1 }}
-                                      exit={{ height: 0, opacity: 0 }}
-                                      transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
-                                      style={{ overflow: 'hidden' }}
-                                    >
-                                      <div className="bg-white border border-[#e5e5e3] rounded-[8px] p-[11px] flex flex-col gap-2">
-                                        <div className="grid grid-cols-8 gap-1">
-                                          {CTA_COLOR_PALETTE.flat().map((color, idx) => (
-                                            <button
-                                              key={idx}
-                                              onClick={() => {
-                                                setCtaTextColor(color);
-                                                setCtaColorGridOpen(false);
-                                              }}
-                                              className="aspect-square rounded-[3px] cursor-pointer hover:scale-110 transition-transform"
-                                              style={{
-                                                background: color,
-                                                border:
-                                                  idx === 0
-                                                    ? '1px solid #d8d8d6'
-                                                    : '1px solid rgba(0,0,0,0.07)',
-                                                outline: ctaTextColor === color ? '2px solid #1a1a1a' : 'none',
-                                                outlineOffset: 1,
-                                              }}
-                                            />
-                                          ))}
-                                        </div>
-                                        {/* Hex input row */}
-                                        <div className="border-t border-[#ebebea] pt-[9px] flex items-center gap-[6px]">
-                                          <div
-                                            className="w-[22px] h-[22px] rounded-[4px] border border-[#d8d8d6] shrink-0"
-                                            style={{ background: ctaTextColor }}
-                                          />
-                                          <span
-                                            className="text-[11.5px] text-[#9a9a9a] shrink-0"
-                                            style={{ fontFamily: 'Courier New, monospace' }}
-                                          >
-                                            #
-                                          </span>
-                                          <input
-                                            type="text"
-                                            value={ctaTextColor.replace('#', '').toUpperCase()}
-                                            onChange={(e) => {
-                                              const val = e.target.value;
-                                              if (/^[0-9A-Fa-f]{0,6}$/.test(val)) {
-                                                setCtaTextColor('#' + val);
-                                              }
-                                            }}
-                                            className="flex-1 text-[11.5px] text-[#9a9a9a] uppercase outline-none bg-transparent min-w-0"
-                                            style={{ fontFamily: 'Courier New, monospace' }}
-                                            maxLength={6}
-                                          />
-                                          <button className="px-2 py-1 border border-[#e0e0de] rounded-[4px] text-[10.5px] text-[#9a9a9a] shrink-0 cursor-pointer hover:bg-[#f5f5f5] transition-colors">
-                                            Custom
-                                          </button>
-                                        </div>
-                                      </div>
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                              </div>
-                            </div>
-
-                            {/* Label color */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Label color
-                              </span>
-                              <div className="flex items-center gap-[6px]">
-                                {[
-                                  { id: 'white', bg: '#ffffff', shadow: 'inset 0 0 0 2px rgba(0,0,0,0.12)' },
-                                  { id: 'black', bg: '#111111', shadow: 'none' },
-                                ].map(({ id, bg, shadow }) => (
-                                  <button
-                                    key={id}
-                                    onClick={() => setCtaLabelColor(id)}
-                                    className="rounded-full shrink-0 cursor-pointer"
-                                    style={{
-                                      width: 22,
-                                      height: 22,
-                                      background: bg,
-                                      boxShadow: shadow,
-                                      outline: ctaLabelColor === id ? '1.5px solid #111' : 'none',
-                                      outlineOffset: 3,
-                                    }}
-                                  />
-                                ))}
-                                <button className="w-[22px] h-[22px] rounded-full border border-dashed border-[rgba(0,0,0,0.15)] flex items-center justify-center text-[#bbb] text-[14px] leading-none cursor-pointer hover:bg-[#f0eeea]">
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Show icon */}
-                            <div className="flex items-center justify-between">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Show icon
-                              </span>
-                              <button
-                                onClick={() => setCtaShowIcon((v) => !v)}
-                                className="relative shrink-0 cursor-pointer transition-colors"
-                                style={{
-                                  width: 34,
-                                  height: 20,
-                                  borderRadius: 10,
-                                  background: ctaShowIcon ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF,
-                                }}
-                              >
-                                <div
-                                  className="absolute top-[3px] bg-white rounded-[7px]"
-                                  style={{
-                                    width: 14,
-                                    height: 14,
-                                    left: ctaShowIcon ? 17 : 3,
-                                    transition: 'left 0.15s ease',
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── TYPOGRAPHY section ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setCtaSections((p) => ({ ...p, typography: !p.typography }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span
-                        className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]"
-                        style={{ fontFamily: "'DM Sans', sans-serif" }}
-                      >
-                        TYPOGRAPHY
-                      </span>
-                      <motion.span
-                        animate={{ rotate: ctaSections.typography ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {ctaSections.typography && (
-                        <motion.div
-                          key="cta-typo-content"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col gap-3 px-4 pt-[6px] pb-[14px]">
-
-                            {/* Heading size */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Heading size
-                              </span>
-                              <div className="flex items-center gap-[10px]">
-                                <input
-                                  type="range"
-                                  min={12}
-                                  max={60}
-                                  value={ctaHeadingSize}
-                                  onChange={(e) => setCtaHeadingSize(Number(e.target.value))}
-                                  className="cta-slider flex-1"
-                                  style={{
-                                    background: `linear-gradient(to right, #111 ${((ctaHeadingSize - 12) / 48) * 100}%, #ddd ${((ctaHeadingSize - 12) / 48) * 100}%)`,
-                                  }}
-                                />
-                                <span
-                                  className="text-[11px] font-medium text-[#111] min-w-[20px] text-right shrink-0"
-                                  style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                >
-                                  {ctaHeadingSize}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Body size */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Body size
-                              </span>
-                              <div className="flex items-center gap-[10px]">
-                                <input
-                                  type="range"
-                                  min={8}
-                                  max={32}
-                                  value={ctaBodySize}
-                                  onChange={(e) => setCtaBodySize(Number(e.target.value))}
-                                  className="cta-slider flex-1"
-                                  style={{
-                                    background: `linear-gradient(to right, #111 ${((ctaBodySize - 8) / 24) * 100}%, #ddd ${((ctaBodySize - 8) / 24) * 100}%)`,
-                                  }}
-                                />
-                                <span
-                                  className="text-[11px] font-medium text-[#111] min-w-[20px] text-right shrink-0"
-                                  style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                >
-                                  {ctaBodySize}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Font weight */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Font weight
-                              </span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] p-[2px] rounded-[7px]">
-                                {[
-                                  { label: 'Light', weight: 300 },
-                                  { label: 'Regular', weight: 400 },
-                                  { label: 'Bold', weight: 700 },
-                                ].map(({ label, weight }) => (
-                                  <button
-                                    key={label}
-                                    onClick={() => setCtaFontWeight(label)}
-                                    className={`flex items-center justify-center py-[6px] rounded-[5px] text-[11.5px] transition-colors cursor-pointer ${
-                                      ctaFontWeight === label
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] shadow-[0px_1px_1px_rgba(0,0,0,0.08)] text-[#111]'
-                                        : 'text-[#777] hover:text-[#444]'
-                                    }`}
-                                    style={{
-                                      fontFamily: "'DM Sans', sans-serif",
-                                      fontWeight: weight,
-                                    }}
-                                  >
-                                    {label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Text align */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Text align
-                              </span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] p-[2px] rounded-[7px]">
-                                {[
-                                  { id: 'left', Icon: RiAlignLeft },
-                                  { id: 'center', Icon: RiAlignCenter },
-                                  { id: 'right', Icon: RiAlignRight },
-                                ].map(({ id, Icon }) => (
-                                  <button
-                                    key={id}
-                                    onClick={() => setCtaTextAlign(id)}
-                                    className={`flex items-center justify-center py-[6px] rounded-[5px] transition-colors cursor-pointer ${
-                                      ctaTextAlign === id
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                        : 'hover:bg-white/30'
-                                    }`}
-                                  >
-                                    <Icon
-                                      size={13}
-                                      className={ctaTextAlign === id ? 'text-[#111]' : 'text-[#777]'}
-                                    />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── SPACING section ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setCtaSections((p) => ({ ...p, spacing: !p.spacing }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span
-                        className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]"
-                        style={{ fontFamily: "'DM Sans', sans-serif" }}
-                      >
-                        SPACING
-                      </span>
-                      <motion.span
-                        animate={{ rotate: ctaSections.spacing ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {ctaSections.spacing && (
-                        <motion.div
-                          key="cta-spacing-content"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col gap-4 px-4 pt-[6px] pb-[14px]">
-
-                            {/* Padding */}
-                            <div className="flex flex-col gap-[6px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Padding
-                              </span>
-                              <div className="flex items-center gap-[10px]">
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={100}
-                                  value={ctaPadding}
-                                  onChange={(e) => setCtaPadding(Number(e.target.value))}
-                                  className="cta-slider flex-1"
-                                  style={{
-                                    background: `linear-gradient(to right, #111 ${ctaPadding}%, #ddd ${ctaPadding}%)`,
-                                  }}
-                                />
-                                <span
-                                  className="text-[11px] font-medium text-[#111] min-w-[20px] text-right shrink-0"
-                                  style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                >
-                                  {ctaPadding}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Content width */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span
-                                className="text-[12px] font-normal text-[#444]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              >
-                                Content width
-                              </span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] p-[2px] rounded-[7px]">
-                                {['Narrow', 'Default', 'Wide'].map((w) => (
-                                  <button
-                                    key={w}
-                                    onClick={() => setCtaContentWidth(w)}
-                                    className={`flex items-center justify-center py-[6px] rounded-[5px] text-[11.5px] transition-colors cursor-pointer ${
-                                      ctaContentWidth === w
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] shadow-[0px_1px_1px_rgba(0,0,0,0.08)] text-[#111] font-medium'
-                                        : 'text-[#777] font-normal hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {w}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Heading Configure panel (right) ── */}
-        <AnimatePresence>
-          {showHeadingConfigPanel && (
-            <motion.div
-              key="heading-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div
-                className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col"
-                style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}
-              >
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                    Configure
-                  </span>
-                  <button
-                    onClick={() => setShowHeadingConfigPanel(false)}
-                    className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors"
-                  >
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                {/* Card type label */}
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                    HEADING
-                  </span>
-                </div>
-
-                {/* Scrollable content */}
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setHeadingSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        FIELD SETTINGS
-                      </span>
-                      <motion.span
-                        animate={{ rotate: headingSections.fieldSettings ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {headingSections.fieldSettings && (
-                        <motion.div
-                          key="heading-field-settings"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col px-4 pt-[4px] pb-[14px] gap-0">
-
-                            {/* Required toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Required</span>
-                              <button
-                                onClick={() => setHeadingRequired((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: headingRequired ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: headingRequired ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Hidden toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Hidden</span>
-                              <button
-                                onClick={() => setHeadingHidden((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: headingHidden ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: headingHidden ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Heading text input */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Heading text</span>
-                              <input
-                                type="text"
-                                value={headingText}
-                                onChange={(e) => setHeadingText(e.target.value)}
-                                placeholder="Enter your heading..."
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Heading level */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Heading level</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-4 gap-[2px] p-[3px] rounded-[8px]">
-                                {['H1', 'H2', 'H3', 'H4'].map((lvl) => (
-                                  <button
-                                    key={lvl}
-                                    onClick={() => setHeadingLevel(lvl)}
-                                    className={`flex items-center justify-center py-[5px] rounded-[6px] text-[12px] transition-colors cursor-pointer ${
-                                      headingLevel === lvl
-                                        ? 'bg-white shadow-[0px_1px_1px_rgba(0,0,0,0.1)] text-[#111] font-medium'
-                                        : 'text-[#777] font-normal hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {lvl}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Sub-heading */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Sub-heading</span>
-                              <input
-                                type="text"
-                                value={subHeading}
-                                onChange={(e) => setSubHeading(e.target.value)}
-                                placeholder="Optional sub-heading..."
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── CONDITIONAL LOGIC ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setHeadingSections((p) => ({ ...p, conditionalLogic: !p.conditionalLogic }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        CONDITIONAL LOGIC
-                      </span>
-                      <motion.span
-                        animate={{ rotate: headingSections.conditionalLogic ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {headingSections.conditionalLogic && (
-                        <motion.div
-                          key="heading-cond-logic"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="px-4 pb-[15px]">
-                            <BlockVisibilityConditions
-                              conditions={showIfConditions}
-                              onChange={setShowIfConditions}
-                              priorScreens={priorScreensForActive}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setHeadingSections((p) => ({ ...p, appearance: !p.appearance }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        APPEARANCE
-                      </span>
-                      <motion.span
-                        animate={{ rotate: headingSections.appearance ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {headingSections.appearance && (
-                        <motion.div
-                          key="heading-appearance"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col gap-[12px] px-4 pt-[4px] pb-[14px]">
-
-                            {/* Text size */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Text size</span>
-                              <div className="flex items-center gap-[6px]">
-                                {['S', 'M', 'L', 'XL'].map((sz) => (
-                                  <button
-                                    key={sz}
-                                    onClick={() => setHeadingTextSize(sz)}
-                                    className={`w-8 h-7 flex items-center justify-center rounded-[6px] border text-[12px] transition-colors cursor-pointer ${
-                                      headingTextSize === sz
-                                        ? 'bg-white border-[#111] text-[#111] font-medium'
-                                        : 'bg-white border-[#e0e0e0] text-[#777] hover:border-[#bbb]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {sz}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Alignment */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Alignment</span>
-                              <div className="flex items-center gap-[6px]">
-                                {[
-                                  { id: 'left', Icon: RiAlignLeft },
-                                  { id: 'center', Icon: RiAlignCenter },
-                                  { id: 'right', Icon: RiAlignRight },
-                                ].map(({ id, Icon }) => (
-                                  <button
-                                    key={id}
-                                    onClick={() => setHeadingAlignment(id)}
-                                    className={`w-8 h-7 flex items-center justify-center rounded-[6px] border transition-colors cursor-pointer ${
-                                      headingAlignment === id
-                                        ? 'bg-white border-[#111]'
-                                        : 'bg-white border-[#e0e0e0] hover:border-[#bbb]'
-                                    }`}
-                                  >
-                                    <Icon size={14} className={headingAlignment === id ? 'text-[#111]' : 'text-[#777]'} />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Font weight */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Font weight</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] grid grid-cols-3 gap-[2px] p-[3px] rounded-[8px]">
-                                {['Light', 'Regular', 'Bold'].map((w) => (
-                                  <button
-                                    key={w}
-                                    onClick={() => setHeadingFontWeight(w)}
-                                    className={`flex items-center justify-center py-[5px] rounded-[6px] text-[11.5px] transition-colors cursor-pointer ${
-                                      headingFontWeight === w
-                                        ? 'bg-white shadow-[0px_1px_1px_rgba(0,0,0,0.1)] text-[#111] font-medium'
-                                        : 'text-[#777] font-normal hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {w}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Description Configure panel (right) ── */}
-        <AnimatePresence>
-          {showDescriptionConfigPanel && (
-            <motion.div
-              key="description-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div
-                className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col"
-                style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}
-              >
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                    Configure
-                  </span>
-                  <button
-                    onClick={() => setShowDescriptionConfigPanel(false)}
-                    className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors"
-                  >
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                {/* Card type label */}
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                    DESCRIPTION
-                  </span>
-                </div>
-
-                {/* Scrollable content */}
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setDescriptionSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        FIELD SETTINGS
-                      </span>
-                      <motion.span
-                        animate={{ rotate: descriptionSections.fieldSettings ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {descriptionSections.fieldSettings && (
-                        <motion.div
-                          key="desc-field-settings"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col px-4 pt-[4px] pb-[14px] gap-0">
-
-                            {/* Hidden toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Hidden</span>
-                              <button
-                                onClick={() => setDescriptionHidden((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: descriptionHidden ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: descriptionHidden ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Content textarea */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Content</span>
-                              <textarea
-                                value={descriptionContent}
-                                onChange={(e) => setDescriptionContent(e.target.value)}
-                                placeholder="Enter description text..."
-                                rows={4}
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors resize-none"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Formatting */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Formatting</span>
-                              <div className="flex flex-wrap gap-[6px]">
-                                {[
-                                  { key: 'bold', label: 'Bold' },
-                                  { key: 'italic', label: 'Italic' },
-                                  { key: 'underline', label: 'Underline' },
-                                  { key: 'link', label: 'Link' },
-                                  { key: 'list', label: 'List' },
-                                ].map(({ key, label }) => (
-                                  <button
-                                    key={key}
-                                    onClick={() => setDescriptionFormatting((prev) => ({ ...prev, [key]: !prev[key] }))}
-                                    className={`px-[11px] py-[5px] rounded-[20px] text-[11.5px] transition-colors cursor-pointer border ${
-                                      descriptionFormatting[key]
-                                        ? 'bg-[#111] border-[#111] text-white'
-                                        : 'bg-[#f2f2f2] border-[#e8e8e8] text-[#555] hover:bg-[#e8e8e8]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Show character count toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5] mt-[8px]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Show character count</span>
-                              <button
-                                onClick={() => setDescriptionShowCharCount((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: descriptionShowCharCount ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: descriptionShowCharCount ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Character limit */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Character limit</span>
-                              <input
-                                type="number"
-                                value={descriptionCharLimit}
-                                onChange={(e) => setDescriptionCharLimit(e.target.value)}
-                                placeholder="No limit"
-                                min={1}
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── CONDITIONAL LOGIC ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setDescriptionSections((p) => ({ ...p, conditionalLogic: !p.conditionalLogic }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        CONDITIONAL LOGIC
-                      </span>
-                      <motion.span
-                        animate={{ rotate: descriptionSections.conditionalLogic ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {descriptionSections.conditionalLogic && (
-                        <motion.div
-                          key="desc-cond-logic"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="px-4 pb-[15px]">
-                            <BlockVisibilityConditions
-                              conditions={showIfConditions}
-                              onChange={setShowIfConditions}
-                              priorScreens={priorScreensForActive}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setDescriptionSections((p) => ({ ...p, appearance: !p.appearance }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        APPEARANCE
-                      </span>
-                      <motion.span
-                        animate={{ rotate: descriptionSections.appearance ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {descriptionSections.appearance && (
-                        <motion.div
-                          key="desc-appearance"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col gap-[12px] px-4 pt-[4px] pb-[14px]">
-
-                            {/* Text size */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Text size</span>
-                              <div className="flex items-center gap-[6px]">
-                                {['S', 'M', 'L'].map((sz) => (
-                                  <button
-                                    key={sz}
-                                    onClick={() => setDescriptionTextSize(sz)}
-                                    className={`w-8 h-7 flex items-center justify-center rounded-[6px] border text-[12px] transition-colors cursor-pointer ${
-                                      descriptionTextSize === sz
-                                        ? 'bg-white border-[#111] text-[#111] font-medium'
-                                        : 'bg-white border-[#e0e0e0] text-[#777] hover:border-[#bbb]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {sz}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Alignment */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Alignment</span>
-                              <div className="flex items-center gap-[6px]">
-                                {[
-                                  { id: 'left', Icon: RiAlignLeft },
-                                  { id: 'center', Icon: RiAlignCenter },
-                                  { id: 'right', Icon: RiAlignRight },
-                                ].map(({ id, Icon }) => (
-                                  <button
-                                    key={id}
-                                    onClick={() => setDescriptionAlignment(id)}
-                                    className={`w-8 h-7 flex items-center justify-center rounded-[6px] border transition-colors cursor-pointer ${
-                                      descriptionAlignment === id
-                                        ? 'bg-white border-[#111]'
-                                        : 'bg-white border-[#e0e0e0] hover:border-[#bbb]'
-                                    }`}
-                                  >
-                                    <Icon size={14} className={descriptionAlignment === id ? 'text-[#111]' : 'text-[#777]'} />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Image Configure panel (right) ── */}
-        <AnimatePresence>
-          {showImageConfigPanel && (
-            <motion.div
-              key="image-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 300 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div
-                className="w-[300px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col"
-                style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}
-              >
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                    Configure
-                  </span>
-                  <button
-                    onClick={() => setShowImageConfigPanel(false)}
-                    className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors"
-                  >
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                {/* Card type label */}
-                <div className="px-4 pt-[8px] pb-[6px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                    IMAGES
-                  </span>
-                </div>
-
-                {/* Scrollable content */}
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setImageSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        FIELD SETTINGS
-                      </span>
-                      <motion.span
-                        animate={{ rotate: imageSections.fieldSettings ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {imageSections.fieldSettings && (
-                        <motion.div
-                          key="image-field-settings"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col px-4 pt-[4px] pb-[14px] gap-0">
-
-                            {/* Hidden toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Hidden</span>
-                              <button
-                                onClick={() => setImageHidden((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: imageHidden ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: imageHidden ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Image upload area */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Image</span>
-                              {imagePreview ? (
-                                <div className="relative rounded-[8px] overflow-hidden border border-[#e8e8e8]">
-                                  <img src={imagePreview} alt="Preview" className="w-full h-[80px] object-cover" />
-                                  <div className="absolute inset-0 bg-black/20 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                                    <button
-                                      onClick={() => imageFileInputRef.current && imageFileInputRef.current.click()}
-                                      className="bg-white text-[#444] text-[11px] px-[10px] py-[5px] rounded-[6px] cursor-pointer hover:bg-gray-100 transition-colors font-medium"
-                                    >
-                                      Replace
-                                    </button>
-                                    <button
-                                      onClick={() => { setImagePreview(null); setImageFileName(''); }}
-                                      className="bg-white text-[#d63030] text-[11px] px-[10px] py-[5px] rounded-[6px] cursor-pointer hover:bg-red-50 transition-colors font-medium"
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                  {imageFileName && (
-                                    <div className="px-[10px] py-[6px] bg-white border-t border-[#e8e8e8]">
-                                      <p className="text-[11px] text-[#666] truncate">{imageFileName}</p>
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => imageFileInputRef.current && imageFileInputRef.current.click()}
-                                  className="w-full bg-[#fafafa] border border-dashed border-[#d0d0d0] rounded-[8px] flex flex-col items-center justify-center py-[17px] gap-[4px] cursor-pointer hover:bg-[#f2f2f2] transition-colors"
-                                >
-                                  <ImagesCardIcon size={16} className="text-[#999]" />
-                                  <p className="text-[12px] text-[#777] text-center">
-                                    <span className="font-medium text-[#555]">Click to upload</span>
-                                    {' '}or drag & drop
-                                  </p>
-                                  <p className="text-[11px] text-[#aaa]">PNG, JPG, GIF, WebP</p>
-                                </button>
-                              )}
-                            </div>
-
-                            {/* Alt text */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Alt text</span>
-                              <input
-                                type="text"
-                                value={imageAltText}
-                                onChange={(e) => setImageAltText(e.target.value)}
-                                placeholder="Describe the image..."
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Caption */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Caption</span>
-                              <input
-                                type="text"
-                                value={imageCaption}
-                                onChange={(e) => setImageCaption(e.target.value)}
-                                placeholder="Optional caption..."
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Link on click toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5] mt-[8px]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Link on click</span>
-                              <button
-                                onClick={() => setImageLinkOnClick((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: imageLinkOnClick ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: imageLinkOnClick ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* URL input (visible when link on click is on) */}
-                            <AnimatePresence initial={false}>
-                              {imageLinkOnClick && (
-                                <motion.div
-                                  key="image-link-url"
-                                  initial={{ height: 0, opacity: 0 }}
-                                  animate={{ height: 'auto', opacity: 1 }}
-                                  exit={{ height: 0, opacity: 0 }}
-                                  transition={{ duration: 0.18, ease: 'easeInOut' }}
-                                  style={{ overflow: 'hidden' }}
-                                >
-                                  <div className="pt-[8px] pb-[4px]">
-                                    <input
-                                      type="url"
-                                      value={imageLinkUrl}
-                                      onChange={(e) => setImageLinkUrl(e.target.value)}
-                                      placeholder="https://..."
-                                      className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                      style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                    />
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-
-                            {/* Open in new tab toggle */}
-                            <div className="flex items-center justify-between py-[9px] border-b border-[#f5f5f5]">
-                              <span className="text-[13px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Open in new tab</span>
-                              <button
-                                onClick={() => setImageOpenInNewTab((v) => !v)}
-                                className="relative shrink-0 cursor-pointer"
-                                style={{ width: 36, height: 20 }}
-                              >
-                                <div
-                                  className="absolute inset-0 rounded-[10px] transition-colors duration-200"
-                                  style={{ background: imageOpenInNewTab ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF }}
-                                />
-                                <div
-                                  className="absolute top-[2px] rounded-[8px] bg-white transition-all duration-200"
-                                  style={{
-                                    width: 16,
-                                    height: 16,
-                                    left: imageOpenInNewTab ? 18 : 2,
-                                  }}
-                                />
-                              </button>
-                            </div>
-
-                            {/* Question text */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Question</span>
-                              <input
-                                type="text"
-                                value={imageQuestion}
-                                onChange={(e) => setImageQuestion(e.target.value)}
-                                placeholder="What do you see in this image?"
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Description text */}
-                            <div className="flex flex-col gap-[5px] pt-[12px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Description</span>
-                              <input
-                                type="text"
-                                value={imageDescription}
-                                onChange={(e) => setImageDescription(e.target.value)}
-                                placeholder="Describe what's happening in the photo above."
-                                className="w-full bg-[#fafafa] border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[13px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.25)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── CONDITIONAL LOGIC ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setImageSections((p) => ({ ...p, conditionalLogic: !p.conditionalLogic }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        CONDITIONAL LOGIC
-                      </span>
-                      <motion.span
-                        animate={{ rotate: imageSections.conditionalLogic ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {imageSections.conditionalLogic && (
-                        <motion.div
-                          key="image-cond-logic"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="px-4 pt-[4px] pb-[14px]">
-                            <BlockVisibilityConditions
-                              conditions={showIfConditions}
-                              onChange={setShowIfConditions}
-                              priorScreens={priorScreensForActive}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE ── */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button
-                      onClick={() => setImageSections((p) => ({ ...p, appearance: !p.appearance }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                        APPEARANCE
-                      </span>
-                      <motion.span
-                        animate={{ rotate: imageSections.appearance ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {imageSections.appearance && (
-                        <motion.div
-                          key="image-appearance"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="flex flex-col gap-[12px] px-4 pt-[4px] pb-[14px]">
-
-                            {/* Alignment */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Alignment</span>
-                              <div className="flex items-center gap-[6px]">
-                                {[
-                                  { id: 'left', Icon: RiAlignLeft },
-                                  { id: 'center', Icon: RiAlignCenter },
-                                  { id: 'right', Icon: RiAlignRight },
-                                ].map(({ id, Icon }) => (
-                                  <button
-                                    key={id}
-                                    onClick={() => setImageAlignment(id)}
-                                    className={`w-8 h-7 flex items-center justify-center rounded-[6px] border transition-colors cursor-pointer ${
-                                      imageAlignment === id
-                                        ? 'bg-white border-[#111]'
-                                        : 'bg-white border-[#e0e0e0] hover:border-[#bbb]'
-                                    }`}
-                                  >
-                                    <Icon size={14} className={imageAlignment === id ? 'text-[#111]' : 'text-[#777]'} />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Width */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Width</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] flex gap-[2px] p-[3px] rounded-[8px]">
-                                {['Fit', 'Full', 'Custom'].map((w) => (
-                                  <button
-                                    key={w}
-                                    onClick={() => setImageWidth(w)}
-                                    className={`flex-1 flex items-center justify-center py-[5px] rounded-[6px] text-[12px] transition-colors cursor-pointer ${
-                                      imageWidth === w
-                                        ? 'bg-white shadow-[0px_1px_1px_rgba(0,0,0,0.1)] text-[#111] font-medium'
-                                        : 'text-[#777] font-normal hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {w}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Corner radius */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Corner radius</span>
-                              <div className="flex items-center gap-[10px]">
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={24}
-                                  value={imageCornerRadius}
-                                  onChange={(e) => setImageCornerRadius(Number(e.target.value))}
-                                  className="flex-1 h-[3px] accent-[#111] cursor-pointer"
-                                />
-                                <span className="text-[12px] text-[#555] min-w-[20px] text-right" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                                  {imageCornerRadius}
-                                </span>
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Video Configure panel ── */}
-        <AnimatePresence>
-          {showVideoConfigPanel && (
-            <motion.div
-              key="video-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowVideoConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>VIDEO</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* Field Settings */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setVideoSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: videoSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {videoSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            {/* Question */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={videoQuestion} onChange={(e) => setVideoQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            {/* Description */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Description</label>
-                              <textarea value={videoDescription} onChange={(e) => setVideoDescription(e.target.value)} rows={2}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors resize-none" />
-                            </div>
-                            {/* Video Source */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Video Source</label>
-                              <select value={videoSource} onChange={(e) => setVideoSource(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors">
-                                <option value="youtube">YouTube</option>
-                                <option value="vimeo">Vimeo</option>
-                              </select>
-                            </div>
-                            {/* Video URL */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Video URL</label>
-                              <input type="text" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="Paste YouTube or Vimeo URL"
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            {/* Caption */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Caption</label>
-                              <input type="text" value={videoCaption} onChange={(e) => setVideoCaption(e.target.value)} placeholder="Optional caption"
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            {/* Toggles */}
-                            {[
-                              { label: 'Required', val: videoRequired, set: setVideoRequired },
-                              { label: 'Hidden', val: videoHidden, set: setVideoHidden },
-                              { label: 'Loop', val: videoLoop, set: setVideoLoop },
-                              { label: 'Autoplay', val: videoAutoplay, set: setVideoAutoplay },
-                              { label: 'Show controls', val: videoShowControls, set: setVideoShowControls },
-                            ].map(({ label, val, set }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]">{label}</span>
-                                <button onClick={() => set(!val)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${val ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                  <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${val ? 'left-[18px]' : 'left-[2px]'}`} />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* Appearance */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setVideoSections((p) => ({ ...p, appearance: !p.appearance }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>APPEARANCE</span>
-                      <motion.span animate={{ rotate: videoSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {videoSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            {/* Width */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Width</label>
-                              <div className="flex gap-1">
-                                {['Full', 'Wide', 'Medium', 'Small'].map((w) => (
-                                  <button key={w} onClick={() => setVideoWidth(w)}
-                                    className={`flex-1 text-[11px] py-[6px] rounded-[5px] border transition-colors ${videoWidth === w ? 'bg-[#111] text-white border-[#111]' : 'bg-white text-[#555] border-[rgba(0,0,0,0.12)] hover:border-[#999]'}`}>
-                                    {w}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                            {/* Aspect ratio */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Aspect Ratio</label>
-                              <div className="flex gap-1">
-                                {['16:9', '4:3', '1:1'].map((r) => (
-                                  <button key={r} onClick={() => setVideoAspectRatio(r)}
-                                    className={`flex-1 text-[11px] py-[6px] rounded-[5px] border transition-colors ${videoAspectRatio === r ? 'bg-[#111] text-white border-[#111]' : 'bg-white text-[#555] border-[rgba(0,0,0,0.12)] hover:border-[#999]'}`}>
-                                    {r}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                            {/* Corner Radius */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-[6px]">Corner Radius: {videoCornerRadius}px</label>
-                              <input type="range" min={0} max={24} value={videoCornerRadius} onChange={(e) => setVideoCornerRadius(Number(e.target.value))} className="w-full accent-[#111]" />
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Contact Configure panel ── */}
-        <AnimatePresence>
-          {showContactConfigPanel && (
-            <motion.div
-              key="contact-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowContactConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>CONTACT</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* Field Settings */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setContactSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: contactSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {contactSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={contactQuestion} onChange={(e) => setContactQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={contactHelperText} onChange={(e) => setContactHelperText(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Required</span>
-                              <button onClick={() => setContactRequired(!contactRequired)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${contactRequired ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${contactRequired ? 'left-[18px]' : 'left-[2px]'}`} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* Fields */}
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setContactSections((p) => ({ ...p, fields: !p.fields }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELDS</span>
-                      <motion.span animate={{ rotate: contactSections.fields ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {contactSections.fields && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-2">
-                            {[
-                              { key: 'firstName', label: 'First Name' },
-                              { key: 'lastName', label: 'Last Name' },
-                              { key: 'email', label: 'Email Address' },
-                              { key: 'phone', label: 'Phone' },
-                              { key: 'company', label: 'Company' },
-                            ].map(({ key, label }) => (
-                              <div key={key} className="flex items-center justify-between py-[6px] border-b border-[rgba(0,0,0,0.05)] last:border-0">
-                                <span className="text-[12px] text-[#333]">{label}</span>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-[#aaa]">Req</span>
-                                  <button onClick={() => setContactFields((p) => ({ ...p, [key]: { ...p[key], required: !p[key].required } }))}
-                                    className={`w-7 h-[16px] rounded-full transition-colors relative appearance-none border-0 p-0 ${contactFields[key]?.required ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                    <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white transition-all ${contactFields[key]?.required ? 'left-[16px]' : 'left-[2px]'}`} />
-                                  </button>
-                                  <span className="text-[10px] text-[#aaa]">Show</span>
-                                  <button onClick={() => setContactFields((p) => ({ ...p, [key]: { ...p[key], visible: !p[key].visible } }))}
-                                    className={`w-7 h-[16px] rounded-full transition-colors relative appearance-none border-0 p-0 ${contactFields[key]?.visible !== false ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                    <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white transition-all ${contactFields[key]?.visible !== false ? 'left-[16px]' : 'left-[2px]'}`} />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Address Configure panel ── */}
-        <AnimatePresence>
-          {showAddressConfigPanel && (
-            <motion.div
-              key="address-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowAddressConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>ADDRESS</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setAddressSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: addressSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {addressSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={addressQuestion} onChange={(e) => setAddressQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={addressHelperText} onChange={(e) => setAddressHelperText(e.target.value)} placeholder="Optional helper text"
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Required</span>
-                              <button onClick={() => setAddressRequired(!addressRequired)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${addressRequired ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${addressRequired ? 'left-[18px]' : 'left-[2px]'}`} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setAddressSections((p) => ({ ...p, fields: !p.fields }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELDS</span>
-                      <motion.span animate={{ rotate: addressSections.fields ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {addressSections.fields && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-2">
-                            {[
-                              { key: 'street', label: 'Street Address' },
-                              { key: 'city', label: 'City' },
-                              { key: 'state', label: 'State / Region' },
-                              { key: 'postal', label: 'Postal Code' },
-                              { key: 'country', label: 'Country' },
-                            ].map(({ key, label }) => (
-                              <div key={key} className="flex items-center justify-between py-[6px] border-b border-[rgba(0,0,0,0.05)] last:border-0">
-                                <span className="text-[12px] text-[#333]">{label}</span>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-[#aaa]">Req</span>
-                                  <button onClick={() => setAddressFields((p) => ({ ...p, [key]: { ...p[key], required: !p[key].required } }))}
-                                    className={`w-7 h-[16px] rounded-full transition-colors relative appearance-none border-0 p-0 ${addressFields[key]?.required ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                    <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white transition-all ${addressFields[key]?.required ? 'left-[16px]' : 'left-[2px]'}`} />
-                                  </button>
-                                  <span className="text-[10px] text-[#aaa]">Show</span>
-                                  <button onClick={() => setAddressFields((p) => ({ ...p, [key]: { ...p[key], visible: !p[key].visible } }))}
-                                    className={`w-7 h-[16px] rounded-full transition-colors relative appearance-none border-0 p-0 ${addressFields[key]?.visible !== false ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                    <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white transition-all ${addressFields[key]?.visible !== false ? 'left-[16px]' : 'left-[2px]'}`} />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Work Info Configure panel ── */}
-        <AnimatePresence>
-          {showWorkConfigPanel && (
-            <motion.div
-              key="work-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowWorkConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>WORK INFO</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setWorkSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: workSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {workSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={workQuestion} onChange={(e) => setWorkQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={workHelperText} onChange={(e) => setWorkHelperText(e.target.value)} placeholder="Optional helper text"
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Required</span>
-                              <button onClick={() => setWorkRequired(!workRequired)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${workRequired ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${workRequired ? 'left-[18px]' : 'left-[2px]'}`} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setWorkSections((p) => ({ ...p, fields: !p.fields }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELDS</span>
-                      <motion.span animate={{ rotate: workSections.fields ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {workSections.fields && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-2">
-                            {[
-                              { key: 'company', label: 'Company' },
-                              { key: 'title', label: 'Job Title' },
-                              { key: 'industry', label: 'Industry' },
-                              { key: 'teamSize', label: 'Team Size' },
-                            ].map(({ key, label }) => (
-                              <div key={key} className="flex items-center justify-between py-[6px] border-b border-[rgba(0,0,0,0.05)] last:border-0">
-                                <span className="text-[12px] text-[#333]">{label}</span>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-[#aaa]">Req</span>
-                                  <button onClick={() => setWorkFields((p) => ({ ...p, [key]: { ...p[key], required: !p[key].required } }))}
-                                    className={`w-7 h-[16px] rounded-full transition-colors relative appearance-none border-0 p-0 ${workFields[key]?.required ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                    <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white transition-all ${workFields[key]?.required ? 'left-[16px]' : 'left-[2px]'}`} />
-                                  </button>
-                                  <span className="text-[10px] text-[#aaa]">Show</span>
-                                  <button onClick={() => setWorkFields((p) => ({ ...p, [key]: { ...p[key], visible: !p[key].visible } }))}
-                                    className={`w-7 h-[16px] rounded-full transition-colors relative appearance-none border-0 p-0 ${workFields[key]?.visible !== false ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                    <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white transition-all ${workFields[key]?.visible !== false ? 'left-[16px]' : 'left-[2px]'}`} />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Date Configure panel ── */}
-        <AnimatePresence>
-          {showDateConfigPanel && (
-            <motion.div
-              key="date-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowDateConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>DATE</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setDateSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: dateSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {dateSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={dateQuestion} onChange={(e) => setDateQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={dateHelperText} onChange={(e) => setDateHelperText(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Required</span>
-                              <button onClick={() => setDateRequired(!dateRequired)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${dateRequired ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${dateRequired ? 'left-[18px]' : 'left-[2px]'}`} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Time Configure panel ── */}
-        <AnimatePresence>
-          {showTimeConfigPanel && (
-            <motion.div
-              key="time-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <TimeConfigurePanel
-                onClose={() => setShowTimeConfigPanel(false)}
-                sections={timeSections}
-                setSections={setTimeSections}
-                timeRequired={timeRequired}
-                setTimeRequired={setTimeRequired}
-                timeUse12h={timeUse12h}
-                setTimeUse12h={setTimeUse12h}
-                timeShowSeconds={timeShowSeconds}
-                setTimeShowSeconds={setTimeShowSeconds}
-                timeMinTime={timeMinTime}
-                setTimeMinTime={setTimeMinTime}
-                timeMaxTime={timeMaxTime}
-                setTimeMaxTime={setTimeMaxTime}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Short Text Configure panel ── */}
-        <AnimatePresence>
-          {showShortTextConfigPanel && (
-            <motion.div
-              key="shorttext-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowShortTextConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>SHORT TEXT</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setShortTextSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: shortTextSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {shortTextSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={shortTextQuestion} onChange={(e) => setShortTextQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={shortTextHelperText} onChange={(e) => setShortTextHelperText(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Placeholder</label>
-                              <input type="text" value={shortTextPlaceholder} onChange={(e) => setShortTextPlaceholder(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Min chars</label>
-                                <input type="number" min={0} value={shortTextMinChars} onChange={(e) => setShortTextMinChars(Number(e.target.value))}
-                                  className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                              </div>
-                              <div>
-                                <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Max chars</label>
-                                <input type="number" min={1} value={shortTextMaxChars} onChange={(e) => setShortTextMaxChars(Number(e.target.value))}
-                                  className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Validation</label>
-                              <select value={shortTextValidation} onChange={(e) => setShortTextValidation(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors">
-                                {['None', 'Email', 'URL', 'Number', 'Phone'].map((v) => <option key={v}>{v}</option>)}
-                              </select>
-                            </div>
-                            {[
-                              { label: 'Required', val: shortTextRequired, set: setShortTextRequired },
-                              { label: 'Hidden', val: shortTextHidden, set: setShortTextHidden },
-                            ].map(({ label, val, set }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]">{label}</span>
-                                <button onClick={() => set(!val)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${val ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                  <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${val ? 'left-[18px]' : 'left-[2px]'}`} />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setShortTextSections((p) => ({ ...p, appearance: !p.appearance }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>APPEARANCE</span>
-                      <motion.span animate={{ rotate: shortTextSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {shortTextSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Size</label>
-                              <div className="flex gap-1">
-                                {['S', 'M', 'L'].map((s) => (
-                                  <button key={s} onClick={() => setShortTextSize(s)}
-                                    className={`flex-1 text-[11px] py-[6px] rounded-[5px] border transition-colors ${shortTextSize === s ? 'bg-[#111] text-white border-[#111]' : 'bg-white text-[#555] border-[rgba(0,0,0,0.12)] hover:border-[#999]'}`}>
-                                    {s}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Alignment</label>
-                              <div className="flex gap-1">
-                                {[{ v: 'left', Icon: RiAlignLeft }, { v: 'center', Icon: RiAlignCenter }, { v: 'right', Icon: RiAlignRight }].map(({ v, Icon }) => (
-                                  <button key={v} onClick={() => setShortTextAlign(v)}
-                                    className={`flex-1 text-[14px] py-[5px] rounded-[5px] border transition-colors ${shortTextAlign === v ? 'bg-[#111] text-white border-[#111]' : 'bg-white text-[#555] border-[rgba(0,0,0,0.12)] hover:border-[#999]'}`}>
-                                    <Icon size={14} />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setShortTextSections((p) => ({ ...p, responseQuality: !p.responseQuality }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>RESPONSE QUALITY SCORING</span>
-                      <motion.span animate={{ rotate: shortTextSections.responseQuality ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {shortTextSections.responseQuality && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden w-full">
-                          <div className="w-full">
-                            <ResponseQualityScoringCard
-                              enabled={shortTextResponseQualityEnabled}
-                              onEnabledChange={setShortTextResponseQualityEnabled}
-                              options={shortTextResponseQualityOptions}
-                              onOptionsChange={setShortTextResponseQualityOptions}
-                              onSave={() => {}}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Long Text Configure panel ── */}
-        <AnimatePresence>
-          {showLongTextConfigPanel && (
-            <motion.div
-              key="longtext-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowLongTextConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="px-4 pt-[10px] pb-[8px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>LONG TEXT</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setLongTextSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: longTextSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {longTextSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={longTextQuestion} onChange={(e) => setLongTextQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={longTextHelperText} onChange={(e) => setLongTextHelperText(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Placeholder</label>
-                              <input type="text" value={longTextPlaceholder} onChange={(e) => setLongTextPlaceholder(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Min chars</label>
-                                <input type="number" min={0} value={longTextMinChars} onChange={(e) => setLongTextMinChars(Number(e.target.value))}
-                                  className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                              </div>
-                              <div>
-                                <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Max chars</label>
-                                <input type="number" min={1} value={longTextMaxChars} onChange={(e) => setLongTextMaxChars(Number(e.target.value))}
-                                  className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Validation</label>
-                              <select value={longTextValidation} onChange={(e) => setLongTextValidation(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors">
-                                {['None', 'Email', 'URL'].map((v) => <option key={v}>{v}</option>)}
-                              </select>
-                            </div>
-                            {[
-                              { label: 'Required', val: longTextRequired, set: setLongTextRequired },
-                              { label: 'Hidden', val: longTextHidden, set: setLongTextHidden },
-                            ].map(({ label, val, set }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]">{label}</span>
-                                <button onClick={() => set(!val)} className={`w-8 h-[18px] rounded-full transition-colors relative appearance-none border-0 p-0 ${val ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                  <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-all ${val ? 'left-[18px]' : 'left-[2px]'}`} />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setLongTextSections((p) => ({ ...p, appearance: !p.appearance }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>APPEARANCE</span>
-                      <motion.span animate={{ rotate: longTextSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {longTextSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Size</label>
-                              <div className="flex gap-1">
-                                {['S', 'M', 'L'].map((s) => (
-                                  <button key={s} onClick={() => setLongTextSize(s)}
-                                    className={`flex-1 text-[11px] py-[6px] rounded-[5px] border transition-colors ${longTextSize === s ? 'bg-[#111] text-white border-[#111]' : 'bg-white text-[#555] border-[rgba(0,0,0,0.12)] hover:border-[#999]'}`}>
-                                    {s}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Alignment</label>
-                              <div className="flex gap-1">
-                                {[{ v: 'left', Icon: RiAlignLeft }, { v: 'center', Icon: RiAlignCenter }, { v: 'right', Icon: RiAlignRight }].map(({ v, Icon }) => (
-                                  <button key={v} onClick={() => setLongTextAlign(v)}
-                                    className={`flex-1 text-[14px] py-[5px] rounded-[5px] border transition-colors ${longTextAlign === v ? 'bg-[#111] text-white border-[#111]' : 'bg-white text-[#555] border-[rgba(0,0,0,0.12)] hover:border-[#999]'}`}>
-                                    <Icon size={14} />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="border-t border-[rgba(0,0,0,0.06)]">
-                    <button onClick={() => setLongTextSections((p) => ({ ...p, responseQuality: !p.responseQuality }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: "'DM Sans', sans-serif" }}>RESPONSE QUALITY SCORING</span>
-                      <motion.span animate={{ rotate: longTextSections.responseQuality ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {longTextSections.responseQuality && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden w-full">
-                          <div className="w-full">
-                            <ResponseQualityScoringCard
-                              enabled={responseQualityEnabled}
-                              onEnabledChange={setResponseQualityEnabled}
-                              options={responseQualityOptions}
-                              onOptionsChange={setResponseQualityOptions}
-                              onSave={() => {}}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Single Choice Configure panel ── */}
-        <AnimatePresence>
-          {showSingleConfigPanel && (
-            <motion.div
-              key="single-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowSingleConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto">
-                  {/* FIELD SETTINGS section */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button onClick={() => setSingleSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: singleSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {singleSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 pt-[6px] flex flex-col gap-3">
-                            {/* Question */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={singleQuestion} onChange={(e) => setSingleQuestion(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            {/* Helper text */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={singleHelperText} onChange={(e) => setSingleHelperText(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-                            {/* Options */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Options</label>
-                              <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto pr-[2px]">
-                                {singleOptions.map((opt, i) => (
-                                  <div key={i} className="flex gap-1 items-center">
-                                    <input type="text" value={opt}
-                                      onChange={(e) => setSingleOptions((prev) => prev.map((o, idx) => idx === i ? e.target.value : o))}
-                                      className="flex-1 border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[6px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                                    <button onClick={() => setSingleOptions((prev) => prev.filter((_, idx) => idx !== i))}
-                                      className="text-[#d63030] text-[16px] leading-none px-1 cursor-pointer hover:text-[#b02020] shrink-0">×</button>
-                                  </div>
-                                ))}
-                              </div>
-                              <button onClick={() => setSingleOptions((prev) => [...prev, `Option ${prev.length + 1}`])}
-                                className="w-full text-[11px] text-[#555] border border-dashed border-[rgba(0,0,0,0.15)] rounded-[6px] py-[6px] mt-1 cursor-pointer hover:border-[#999] transition-colors">
-                                + Add option
-                              </button>
-                            </div>
-                            {/* Toggles */}
-                            {[
-                              { label: 'Required', val: singleRequired, set: setSingleRequired },
-                              { label: 'Multiple select', val: singleMultipleSelect, set: setSingleMultipleSelect },
-                              { label: 'Randomise order', val: singleRandomize, set: setSingleRandomize },
-                              { label: 'Allow "Other"', val: singleAllowOther, set: setSingleAllowOther },
-                            ].map(({ label, val, set }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
-                                <button
-                                  onClick={() => set(!val)}
-                                  className="relative shrink-0 transition-colors"
-                                  style={{ width: 34, height: 20, borderRadius: 10, background: val ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF, padding: 3, display: 'flex', alignItems: 'center', justifyContent: val ? 'flex-end' : 'flex-start' }}
-                                >
-                                  <span style={{ width: 14, height: 14, borderRadius: 7, background: 'white', display: 'block' }} />
-                                </button>
-                              </div>
-                            ))}
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-                            {/* Min / Max choices */}
-                            {[
-                              { label: 'Min choices', val: singleMinChoices, set: setSingleMinChoices, isInfinite: false },
-                              { label: 'Max choices', val: singleMaxChoices, set: setSingleMaxChoices, isInfinite: true },
-                            ].map(({ label, val, set, isInfinite }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
-                                <div className="flex items-center gap-[6px] bg-[rgba(0,0,0,0.04)] rounded-[7px] px-[6px] py-[4px]">
-                                  <button
-                                    onClick={() => set((p) => {
-                                      if (isInfinite && p === null) return singleOptions.length;
-                                      return Math.max(0, (p ?? 0) - 1);
-                                    })}
-                                    className="w-[20px] h-[20px] bg-[rgba(255,255,255,0.8)] rounded-[5px] flex items-center justify-center text-[#444] text-[14px] leading-none cursor-pointer hover:bg-white transition-colors shrink-0"
-                                  >−</button>
-                                  <span className="min-w-[28px] text-center text-[13px] font-medium text-[#111]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                                    {isInfinite && val === null ? '∞' : val}
-                                  </span>
-                                  <button
-                                    onClick={() => set((p) => {
-                                      if (isInfinite && p === null) return null;
-                                      const next = (p ?? 0) + 1;
-                                      if (isInfinite && next > singleOptions.length + 2) return null;
-                                      return next;
-                                    })}
-                                    className="w-[20px] h-[20px] bg-[rgba(255,255,255,0.8)] rounded-[5px] flex items-center justify-center text-[#444] text-[14px] leading-none cursor-pointer hover:bg-white transition-colors shrink-0"
-                                  >+</button>
-                                </div>
-                              </div>
-                            ))}
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-                            {/* Show keyboard hints */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Show keyboard hints</span>
-                              <button
-                                onClick={() => setSingleShowKeyboardHints(!singleShowKeyboardHints)}
-                                className="relative shrink-0 transition-colors"
-                                style={{ width: 34, height: 20, borderRadius: 10, background: singleShowKeyboardHints ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF, padding: 3, display: 'flex', alignItems: 'center', justifyContent: singleShowKeyboardHints ? 'flex-end' : 'flex-start' }}
-                              >
-                                <span style={{ width: 14, height: 14, borderRadius: 7, background: 'white', display: 'block' }} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* APPEARANCE section */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button onClick={() => setSingleSections((p) => ({ ...p, appearance: !p.appearance }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-bold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>APPEARANCE</span>
-                      <motion.span animate={{ rotate: singleSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {singleSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 pt-[6px] flex flex-col gap-3">
-                            {/* Layout */}
-                            <div>
-                              <label className="text-[12px] text-[#444] block mb-[6px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Layout</label>
-                              <div className="bg-[rgba(0,0,0,0.04)] p-[2px] rounded-[7px] grid grid-cols-3 gap-[2px]">
-                                {['List', '2 col', '3 col'].map((l) => {
-                                  const val = l === '2 col' ? '2col' : l === '3 col' ? '3col' : 'List';
-                                  const active = singleLayout === val;
-                                  return (
-                                    <button key={l} onClick={() => setSingleLayout(val)}
-                                      className={`text-[11.5px] py-[6px] rounded-[5px] transition-colors ${active ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-sm' : 'text-[#777]'}`}
-                                      style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                                      {l}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                            {/* Option height */}
-                            <div className="flex items-center justify-between">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Option height</label>
-                              <div className="bg-[rgba(0,0,0,0.04)] p-[2px] rounded-[7px] grid grid-cols-3 gap-[2px] w-[108px]">
-                                {['S', 'M', 'L'].map((s) => {
-                                  const active = singleOptionHeight === s;
-                                  return (
-                                    <button key={s} onClick={() => setSingleOptionHeight(s)}
-                                      className={`text-[11.5px] py-[6px] rounded-[5px] transition-colors ${active ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-sm' : 'text-[#777]'}`}
-                                      style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                                      {s}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Multiple Choice Configure panel ── */}
-        <AnimatePresence>
-          {showMultipleConfigPanel && (
-            <motion.div
-              key="multiple-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button
-                    onClick={() => setShowMultipleConfigPanel(false)}
-                    className="w-[20px] h-[20px] bg-[#f0eeea] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors"
-                  >
-                    <RiCloseLine size={11} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                {/* Scrollable content */}
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setMultipleSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span
-                        animate={{ rotate: multipleSections.fieldSettings ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {multipleSections.fieldSettings && (
-                        <motion.div
-                          key="multiple-field-settings"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="px-4 pt-[6px] pb-[14px] flex flex-col gap-[12px]">
-
-                            {/* Toggle rows */}
-                            {[
-                              { label: 'Required', val: multipleRequired, set: setMultipleRequired },
-                              { label: 'Multiple select', val: multipleMultipleSelect, set: setMultipleMultipleSelect },
-                              { label: 'Randomise order', val: multipleRandomize, set: setMultipleRandomize },
-                              { label: 'Allow "Other"', val: multipleAllowOther, set: setMultipleAllowOther },
-                            ].map(({ label, val, set }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
-                                <button
-                                  onClick={() => set(!val)}
-                                  className="relative shrink-0 transition-colors"
-                                  style={{ width: 34, height: 20, borderRadius: 10, background: val ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF, padding: 3, display: 'flex', alignItems: 'center', justifyContent: val ? 'flex-end' : 'flex-start' }}
-                                >
-                                  <span style={{ width: 14, height: 14, borderRadius: 7, background: 'white', display: 'block' }} />
-                                </button>
-                              </div>
-                            ))}
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Min / Max choices steppers */}
-                            {[
-                              { label: 'Min choices', val: multipleMinChoices, set: setMultipleMinChoices, isInfinite: false },
-                              { label: 'Max choices', val: multipleMaxChoices, set: setMultipleMaxChoices, isInfinite: true },
-                            ].map(({ label, val, set, isInfinite }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
-                                <div className="flex items-center gap-[6px] bg-[rgba(0,0,0,0.04)] rounded-[7px] px-[6px] py-[4px]">
-                                  <button
-                                    onClick={() => set((p) => {
-                                      if (isInfinite && p === null) return multipleOptions.length;
-                                      return Math.max(0, (p ?? 0) - 1);
-                                    })}
-                                    className="w-[20px] h-[20px] bg-[rgba(255,255,255,0.8)] rounded-[5px] flex items-center justify-center text-[#444] text-[14px] leading-none cursor-pointer hover:bg-white transition-colors shrink-0"
-                                  >−</button>
-                                  <span className="min-w-[28px] text-center text-[13px] font-medium text-[#111]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                                    {isInfinite && val === null ? '∞' : val}
-                                  </span>
-                                  <button
-                                    onClick={() => set((p) => {
-                                      if (isInfinite && p === null) return null;
-                                      const next = (p ?? 0) + 1;
-                                      if (isInfinite && next > multipleOptions.length + 2) return null;
-                                      return next;
-                                    })}
-                                    className="w-[20px] h-[20px] bg-[rgba(255,255,255,0.8)] rounded-[5px] flex items-center justify-center text-[#444] text-[14px] leading-none cursor-pointer hover:bg-white transition-colors shrink-0"
-                                  >+</button>
-                                </div>
-                              </div>
-                            ))}
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Show keyboard hints */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Show keyboard hints</span>
-                              <button
-                                onClick={() => setMultipleShowKeyboardHints(!multipleShowKeyboardHints)}
-                                className="relative shrink-0 transition-colors"
-                                style={{ width: 34, height: 20, borderRadius: 10, background: multipleShowKeyboardHints ? TOGGLE_TRACK_ON : TOGGLE_TRACK_OFF, padding: 3, display: 'flex', alignItems: 'center', justifyContent: multipleShowKeyboardHints ? 'flex-end' : 'flex-start' }}
-                              >
-                                <span style={{ width: 14, height: 14, borderRadius: 7, background: 'white', display: 'block' }} />
-                              </button>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── OPTIONS ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setMultipleSections((p) => ({ ...p, options: !p.options }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>OPTIONS</span>
-                      <motion.span
-                        animate={{ rotate: multipleSections.options ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {multipleSections.options && (
-                        <motion.div
-                          key="multiple-options"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="px-4 pt-[6px] pb-[14px] flex flex-col gap-[8px]">
-                            {/* Question */}
-                            <div className="flex flex-col gap-[5px]">
-                              <label className="text-[11px] font-semibold text-[#888] uppercase tracking-[0.5px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Question</label>
-                              <input
-                                type="text"
-                                value={multipleQuestion}
-                                onChange={(e) => setMultipleQuestion(e.target.value)}
-                                className="w-full bg-white border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] text-[#111] outline-none focus:border-[rgba(0,0,0,0.3)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-                            {/* Helper text */}
-                            <div className="flex flex-col gap-[5px]">
-                              <label className="text-[11px] font-semibold text-[#888] uppercase tracking-[0.5px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Helper text</label>
-                              <input
-                                type="text"
-                                value={multipleHelperText}
-                                onChange={(e) => setMultipleHelperText(e.target.value)}
-                                placeholder="Optional helper text"
-                                className="w-full bg-white border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] text-[#111] placeholder-[#bbb] outline-none focus:border-[rgba(0,0,0,0.3)] transition-colors"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-                            {/* Options list – scrollable */}
-                            <div className="flex flex-col gap-[6px] max-h-[200px] overflow-y-auto pr-[2px]">
-                              {multipleOptions.map((opt, i) => (
-                                <div key={i} className="flex gap-[6px] items-center">
-                                  <input
-                                    type="text"
-                                    value={opt}
-                                    onChange={(e) => setMultipleOptions((prev) => prev.map((o, idx) => idx === i ? e.target.value : o))}
-                                    className="flex-1 bg-white border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[6px] text-[12px] text-[#111] outline-none focus:border-[rgba(0,0,0,0.3)] transition-colors"
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  />
-                                  <button
-                                    onClick={() => setMultipleOptions((prev) => prev.filter((_, idx) => idx !== i))}
-                                    className="w-[22px] h-[22px] flex items-center justify-center text-[#bbb] text-[15px] leading-none cursor-pointer hover:text-[#d63030] transition-colors shrink-0"
-                                  >×</button>
-                                </div>
-                              ))}
-                            </div>
-                            {/* Add option button */}
-                            <button
-                              onClick={() => setMultipleOptions((prev) => [...prev, `Option ${prev.length + 1}`])}
-                              className="w-full text-[11.5px] text-[#555] border border-dashed border-[rgba(0,0,0,0.15)] rounded-[6px] py-[7px] cursor-pointer hover:border-[rgba(0,0,0,0.3)] hover:text-[#111] transition-colors"
-                              style={{ fontFamily: "'DM Sans', sans-serif" }}
-                            >
-                              + Add option
-                            </button>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setMultipleSections((p) => ({ ...p, appearance: !p.appearance }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>APPEARANCE</span>
-                      <motion.span
-                        animate={{ rotate: multipleSections.appearance ? 180 : 0 }}
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                        className="flex items-center shrink-0"
-                      >
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {multipleSections.appearance && (
-                        <motion.div
-                          key="multiple-appearance"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div className="px-4 pt-[6px] pb-[14px] flex flex-col gap-[12px]">
-
-                            {/* Layout */}
-                            <div className="flex flex-col gap-[8px]">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Layout</label>
-                              <div className="bg-[rgba(0,0,0,0.04)] p-[2px] rounded-[7px] grid grid-cols-3 gap-[2px]">
-                                {[
-                                  { label: 'List', val: 'List' },
-                                  { label: '2 col', val: '2col' },
-                                  { label: '3 col', val: '3col' },
-                                ].map(({ label, val }) => {
-                                  const active = multipleLayout === val;
-                                  return (
-                                    <button
-                                      key={val}
-                                      onClick={() => setMultipleLayout(val)}
-                                      className={`text-[11.5px] py-[6px] rounded-[5px] transition-colors ${active ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-sm' : 'text-[#777]'}`}
-                                      style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                    >
-                                      {label}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                            {/* Option height */}
-                            <div className="flex items-center justify-between">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Option height</label>
-                              <div className="bg-[rgba(0,0,0,0.04)] p-[2px] rounded-[7px] grid grid-cols-3 gap-[2px] w-[108px]">
-                                {['S', 'M', 'L'].map((s) => {
-                                  const active = multipleOptionHeight === s;
-                                  return (
-                                    <button
-                                      key={s}
-                                      onClick={() => setMultipleOptionHeight(s)}
-                                      className={`text-[11.5px] py-[6px] rounded-[5px] transition-colors ${active ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-sm' : 'text-[#777]'}`}
-                                      style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                    >
-                                      {s}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Media Choices Configure panel ── */}
-        <AnimatePresence>
-          {showMediaConfigPanel && (
-            <motion.div
-              key="media-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 300 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[300px] h-full bg-white border-l border-[#f0f0f0] flex flex-col" style={{ boxShadow: '0px 1px 3px 0px rgba(0,0,0,0.08), 0px 0px 0px 1px rgba(0,0,0,0.06)' }}>
-                {/* Header */}
-                <div className="border-b border-[#f0f0f0] flex items-center justify-between px-4 py-[15px] shrink-0">
-                  <span className="text-[14px] font-bold text-[#111] tracking-[-0.14px]" style={{ fontFamily: 'Arial, sans-serif' }}>Configure</span>
-                  <button onClick={() => setShowMediaConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e8e8e8] transition-colors">
-                    <RiCloseLine size={12} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-                {/* Section label */}
-                <div className="px-4 pt-[6px] pb-[10px] shrink-0">
-                  <span className="text-[10px] font-bold tracking-[0.5px] uppercase text-[#aaa]" style={{ fontFamily: 'Arial, sans-serif' }}>MEDIA CHOICE</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-t border-[#f0f0f0]">
-                    <button onClick={() => setMediaSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: 'Arial, sans-serif' }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: mediaSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {mediaSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pt-1 pb-4 flex flex-col">
-                            {/* Toggles */}
-                            {[
-                              { label: 'Required', val: mediaRequired, set: setMediaRequired },
-                              { label: 'Multiple select', val: mediaAllowMultiple, set: setMediaAllowMultiple },
-                              { label: 'Randomise order', val: mediaRandomiseOrder, set: setMediaRandomiseOrder },
-                            ].map(({ label, val, set }, idx, arr) => (
-                              <div key={label} className={`flex items-center justify-between py-[8px] ${idx < arr.length - 1 ? 'border-b border-[#f5f5f5]' : ''}`}>
-                                <span className="text-[13px] text-[#222]" style={{ fontFamily: 'Arial, sans-serif' }}>{label}</span>
-                                <button onClick={() => set(!val)} className={`w-9 h-5 rounded-[10px] transition-colors relative shrink-0 ${val ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                  <span className={`absolute top-[2px] w-4 h-4 rounded-[8px] bg-white transition-all ${val ? 'left-[18px]' : 'left-[2px]'}`} />
-                                </button>
-                              </div>
-                            ))}
-                            {/* Question */}
-                            <div className="flex flex-col gap-[5px] pt-3">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: 'Arial, sans-serif' }}>Question</label>
-                              <input type="text" value={mediaQuestion} onChange={(e) => setMediaQuestion(e.target.value)}
-                                placeholder="Which image do you prefer?"
-                                className="w-full border border-[#e8e8e8] rounded-[7px] px-[11px] py-[9px] text-[13px] bg-[#fafafa] outline-none focus:border-[#111] transition-colors" style={{ fontFamily: 'Arial, sans-serif' }} />
-                            </div>
-                            {/* Helper text */}
-                            <div className="flex flex-col gap-[5px] pt-3">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: 'Arial, sans-serif' }}>Helper text</label>
-                              <input type="text" value={mediaHelperText} onChange={(e) => setMediaHelperText(e.target.value)}
-                                placeholder="Press Enter to continue"
-                                className="w-full border border-[#e8e8e8] rounded-[7px] px-[11px] py-[9px] text-[13px] bg-[#fafafa] outline-none focus:border-[#111] transition-colors" style={{ fontFamily: 'Arial, sans-serif' }} />
-                            </div>
-                            {/* Min choices */}
-                            <div className="flex flex-col gap-[5px] pt-3">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: 'Arial, sans-serif' }}>Min choices</label>
-                              <div className="flex items-center gap-[10px]">
-                                <button onClick={() => setMediaMinChoices((v) => Math.max(1, v - 1))}
-                                  className="w-[26px] h-[26px] border border-[#e0e0e0] rounded-[6px] bg-white flex items-center justify-center text-[#555] text-[16px] leading-none cursor-pointer hover:border-[#999] transition-colors">−</button>
-                                <span className="text-[13px] text-[#222] text-center min-w-[24px]" style={{ fontFamily: 'Arial, sans-serif' }}>{mediaMinChoices}</span>
-                                <button onClick={() => setMediaMinChoices((v) => mediaMaxChoices === null ? v + 1 : Math.min(mediaMaxChoices, v + 1))}
-                                  className="w-[26px] h-[26px] border border-[#e0e0e0] rounded-[6px] bg-white flex items-center justify-center text-[#555] text-[16px] leading-none cursor-pointer hover:border-[#999] transition-colors">+</button>
-                              </div>
-                            </div>
-                            {/* Max choices */}
-                            <div className="flex flex-col gap-[5px] pt-3">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: 'Arial, sans-serif' }}>Max choices</label>
-                              <div className="flex items-center gap-[10px]">
-                                <button onClick={() => setMediaMaxChoices((v) => v === null ? mediaOptions.length : Math.max(mediaMinChoices, v - 1))}
-                                  className="w-[26px] h-[26px] border border-[#e0e0e0] rounded-[6px] bg-white flex items-center justify-center text-[#555] text-[16px] leading-none cursor-pointer hover:border-[#999] transition-colors">−</button>
-                                <span className="text-[13px] text-[#222] text-center min-w-[24px]" style={{ fontFamily: 'Arial, sans-serif' }}>{mediaMaxChoices === null ? '∞' : mediaMaxChoices}</span>
-                                <button onClick={() => setMediaMaxChoices((v) => v === null ? null : (v >= mediaOptions.length ? null : v + 1))}
-                                  className="w-[26px] h-[26px] border border-[#e0e0e0] rounded-[6px] bg-white flex items-center justify-center text-[#555] text-[16px] leading-none cursor-pointer hover:border-[#999] transition-colors">+</button>
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── OPTIONS ── */}
-                  <div className="border-t border-[#f0f0f0]">
-                    <button onClick={() => setMediaSections((p) => ({ ...p, options: !p.options }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: 'Arial, sans-serif' }}>OPTIONS</span>
-                      <motion.span animate={{ rotate: mediaSections.options ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {mediaSections.options && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pt-1 pb-4 flex flex-col gap-2">
-                            {mediaOptions.map((opt, i) => (
-                              <div key={i} className="border border-[#ebebeb] rounded-[8px] p-[11px] flex flex-col gap-2">
-                                {/* Image upload area */}
-                                <label className="block cursor-pointer">
-                                  <input type="file" accept="image/*" className="hidden"
-                                    onChange={(e) => {
-                                      const file = e.target.files[0];
-                                      if (file) {
-                                        const url = URL.createObjectURL(file);
-                                        setMediaOptions((prev) => prev.map((o, idx) => idx === i ? { ...o, image: url } : o));
-                                      }
-                                      e.target.value = '';
-                                    }} />
-                                  {opt.image ? (
-                                    <div className="relative rounded-[8px] overflow-hidden border border-[#d0d0d0]">
-                                      <img src={opt.image} alt={opt.label} className="w-full object-cover" style={{ aspectRatio: '16/4' }} />
-                                      <button
-                                        onClick={(e) => { e.preventDefault(); setMediaOptions((prev) => prev.map((o, idx) => idx === i ? { ...o, image: null } : o)); }}
-                                        className="absolute top-1 right-1 w-[18px] h-[18px] bg-black/50 rounded-full flex items-center justify-center text-white text-[10px] hover:bg-black/70 transition-colors">×</button>
-                                    </div>
-                                  ) : (
-                                    <div className="bg-[#fafafa] border border-dashed border-[#d0d0d0] rounded-[8px] py-[12px] flex items-center justify-center hover:border-[#999] hover:bg-[#f5f5f5] transition-colors">
-                                      <span className="text-[13px] text-[#ccc]" style={{ fontFamily: 'Arial, sans-serif' }}>🖼 Upload image</span>
-                                    </div>
-                                  )}
-                                </label>
-                                {/* Label input + delete */}
-                                <div className="flex items-center gap-2">
-                                  <input type="text" value={opt.label}
-                                    onChange={(e) => setMediaOptions((prev) => prev.map((o, idx) => idx === i ? { ...o, label: e.target.value } : o))}
-                                    placeholder="Option label..."
-                                    className="flex-1 border border-[#e8e8e8] rounded-[7px] px-[11px] py-[9px] text-[13px] bg-[#fafafa] outline-none focus:border-[#111] transition-colors" style={{ fontFamily: 'Arial, sans-serif' }} />
-                                  {mediaOptions.length > 1 && (
-                                    <button onClick={() => setMediaOptions((prev) => prev.filter((_, idx) => idx !== i))}
-                                      className="w-[22px] h-[22px] rounded-full flex items-center justify-center text-[#d63030] hover:bg-red-50 transition-colors shrink-0 text-[14px] leading-none">×</button>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                            <button onClick={() => setMediaOptions((prev) => [...prev, { label: '', image: null }])}
-                              className="border border-dashed border-[#d0d0d0] rounded-[7px] py-[10px] text-[12px] text-[#888] text-center cursor-pointer hover:border-[#999] hover:text-[#555] transition-colors w-full" style={{ fontFamily: 'Arial, sans-serif' }}>
-                              + Add option
-                            </button>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── CONDITIONAL LOGIC ── */}
-                  <div className="border-t border-[#f0f0f0]">
-                    <button onClick={() => setMediaSections((p) => ({ ...p, conditionalLogic: !p.conditionalLogic }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: 'Arial, sans-serif' }}>CONDITIONAL LOGIC</span>
-                      <motion.span animate={{ rotate: mediaSections.conditionalLogic ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {mediaSections.conditionalLogic && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pt-1 pb-4">
-                            <BlockVisibilityConditions
-                              conditions={showIfConditions}
-                              onChange={setShowIfConditions}
-                              priorScreens={priorScreensForActive}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE ── */}
-                  <div className="border-t border-[#f0f0f0]">
-                    <button onClick={() => setMediaSections((p) => ({ ...p, appearance: !p.appearance }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#999]" style={{ fontFamily: 'Arial, sans-serif' }}>APPEARANCE</span>
-                      <motion.span animate={{ rotate: mediaSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#999]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {mediaSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pt-1 pb-4 flex flex-col gap-3">
-                            {/* Layout picker */}
-                            <div className="flex flex-col gap-[5px]">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: 'Arial, sans-serif' }}>Layout</label>
-                              <div className="flex gap-2">
-                                {/* List */}
-                                <button onClick={() => setMediaLayout('list')}
-                                  className={`flex-1 flex flex-col items-center gap-1 py-[9px] px-2 rounded-[7px] border transition-colors ${mediaLayout === 'list' ? 'border-[#111]' : 'border-[#e0e0e0]'}`}>
-                                  <div className="flex flex-col gap-[3px] w-full">
-                                    {[0,1,2].map((k) => <div key={k} className={`h-1 rounded-[2px] w-full ${mediaLayout === 'list' ? 'bg-[#bbb]' : 'bg-[#e0e0e0]'}`} />)}
-                                  </div>
-                                  <span className={`text-[10px] ${mediaLayout === 'list' ? 'text-[#111]' : 'text-[#888]'}`} style={{ fontFamily: 'Arial, sans-serif' }}>List</span>
-                                </button>
-                                {/* 2 col */}
-                                <button onClick={() => setMediaLayout('2col')}
-                                  className={`flex-1 flex flex-col items-center gap-1 py-[9px] px-2 rounded-[7px] border transition-colors ${mediaLayout === '2col' ? 'border-[#111]' : 'border-[#e0e0e0]'}`}>
-                                  <div className="grid grid-cols-2 gap-[3px] w-full">
-                                    {[0,1,2,3].map((k) => <div key={k} className={`h-3 rounded-[2px] ${mediaLayout === '2col' ? 'bg-[#bbb]' : 'bg-[#e0e0e0]'}`} />)}
-                                  </div>
-                                  <span className={`text-[10px] ${mediaLayout === '2col' ? 'text-[#111]' : 'text-[#888]'}`} style={{ fontFamily: 'Arial, sans-serif' }}>2 col</span>
-                                </button>
-                                {/* 3 col */}
-                                <button onClick={() => setMediaLayout('3col')}
-                                  className={`flex-1 flex flex-col items-center gap-1 py-[9px] px-2 rounded-[7px] border transition-colors ${mediaLayout === '3col' ? 'border-[#111]' : 'border-[#e0e0e0]'}`}>
-                                  <div className="grid grid-cols-3 gap-[3px] w-full">
-                                    {[0,1,2,3,4,5].map((k) => <div key={k} className={`h-3 rounded-[2px] ${mediaLayout === '3col' ? 'bg-[#bbb]' : 'bg-[#e0e0e0]'}`} />)}
-                                  </div>
-                                  <span className={`text-[10px] ${mediaLayout === '3col' ? 'text-[#111]' : 'text-[#888]'}`} style={{ fontFamily: 'Arial, sans-serif' }}>3 col</span>
-                                </button>
-                              </div>
-                            </div>
-                            {/* Option height */}
-                            <div className="flex flex-col gap-[5px]">
-                              <label className="text-[12px] text-[#444]" style={{ fontFamily: 'Arial, sans-serif' }}>Option height</label>
-                              <div className="flex gap-[6px]">
-                                {['S', 'M', 'L'].map((size) => (
-                                  <button key={size} onClick={() => setMediaOptionHeight(size)}
-                                    className={`w-8 h-[28px] border rounded-[6px] text-[12px] transition-colors ${mediaOptionHeight === size ? 'border-[#111] text-[#111]' : 'border-[#e0e0e0] text-[#777] hover:border-[#999]'}`}
-                                    style={{ fontFamily: 'Arial, sans-serif' }}>
-                                    {size}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Map Configure panel ── */}
-        <AnimatePresence>
-          {showMapConfigPanel && (
-            <motion.div
-              key="map-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <MapConfigurePanel
-                onClose={() => setShowMapConfigPanel(false)}
-                sections={mapSections}
-                setSections={setMapSections}
-                mapRequired={mapRequired}
-                setMapRequired={setMapRequired}
-                mapHidden={mapHidden}
-                setMapHidden={setMapHidden}
-                mapQuestion={mapQuestion}
-                setMapQuestion={setMapQuestion}
-                mapHelperText={mapHelperText}
-                setMapHelperText={setMapHelperText}
-                mapDefaultLat={mapDefaultLat}
-                setMapDefaultLat={setMapDefaultLat}
-                mapDefaultLng={mapDefaultLng}
-                setMapDefaultLng={setMapDefaultLng}
-                mapDefaultAddress={mapDefaultAddress}
-                setMapDefaultAddress={setMapDefaultAddress}
-                mapZoom={mapZoom}
-                setMapZoom={setMapZoom}
-                mapAllowPinMovement={mapAllowPinMovement}
-                setMapAllowPinMovement={setMapAllowPinMovement}
-                mapShowSearchBar={mapShowSearchBar}
-                setMapShowSearchBar={setMapShowSearchBar}
-                mapRestrictRadius={mapRestrictRadius}
-                setMapRestrictRadius={setMapRestrictRadius}
-                mapPinLabel={mapPinLabel}
-                setMapPinLabel={setMapPinLabel}
-                mapHeight={mapHeight}
-                setMapHeight={setMapHeight}
-                mapType={mapType}
-                setMapType={setMapType}
-                showIfConditions={showIfConditions}
-                onShowIfConditionsChange={setShowIfConditions}
-                priorScreens={priorScreensForActive}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Captcha Configure panel ── */}
-        <AnimatePresence>
-          {showCaptchaConfigPanel && (
-            <motion.div
-              key="captcha-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowCaptchaConfigPanel(false)} className="w-[20px] h-[20px] bg-[#f0eeea] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={12} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setCaptchaSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: captchaSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {captchaSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-[14px] pt-[2px] flex flex-col gap-3">
-
-                            {/* Enabled toggle */}
-                            <div className="flex items-center justify-between border-b border-[rgba(0,0,0,0.06)] pb-[10px]">
-                              <span className="text-[12px] text-[#222]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Enabled</span>
-                              <button
-                                onClick={() => setCaptchaEnabled((v) => !v)}
-                                className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${captchaEnabled ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}
-                              >
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${captchaEnabled ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                            {/* Provider radio list */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Provider</span>
-                              {[
-                                { id: 'Google reCAPTCHA v3', subtitle: 'Invisible, score-based' },
-                                { id: 'Google reCAPTCHA v2', subtitle: 'Checkbox "I\'m not a robot"' },
-                                { id: 'hCaptcha', subtitle: 'Privacy-friendly alternative' },
-                                { id: 'Cloudflare Turnstile', subtitle: 'Invisible, no challenges' },
-                              ].map(({ id, subtitle }) => {
-                                const selected = captchaProvider === id;
-                                return (
-                                  <button
-                                    key={id}
-                                    onClick={() => setCaptchaProvider(id)}
-                                    className={`flex items-center gap-[10px] px-[13px] py-[10px] rounded-[8px] border text-left w-full cursor-pointer transition-colors ${
-                                      selected
-                                        ? 'bg-[#fafafa] border-[#111]'
-                                        : 'bg-transparent border-[rgba(0,0,0,0.1)] hover:border-[rgba(0,0,0,0.25)]'
-                                    }`}
-                                  >
-                                    {/* Radio dot */}
-                                    <div className={`w-[14px] h-[14px] rounded-[4px] border shrink-0 flex items-center justify-center transition-colors ${
-                                      selected ? 'border-[#111]' : 'border-[#ccc]'
-                                    }`}>
-                                      {selected && <div className="w-[6px] h-[6px] rounded-[2px] bg-[#111]" />}
-                                    </div>
-                                    <div className="flex flex-col min-w-0">
-                                      <span className="text-[12px] text-[#222] leading-[1.3]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{id}</span>
-                                      <span className="text-[10.5px] text-[#aaa] leading-[1.3]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{subtitle}</span>
-                                    </div>
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.07)]" />
-
-                            {/* Site key */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Site key</span>
-                              <input
-                                type="text"
-                                value={captchaSiteKey}
-                                onChange={(e) => setCaptchaSiteKey(e.target.value)}
-                                placeholder="Enter your site key..."
-                                className="w-full border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[12px] bg-[#fafafa] outline-none focus:border-[#111] focus:bg-white transition-colors placeholder:text-[#bbb]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                            {/* Secret key */}
-                            <div className="flex flex-col gap-[5px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Secret key</span>
-                              <input
-                                type="password"
-                                value={captchaSecretKey}
-                                onChange={(e) => setCaptchaSecretKey(e.target.value)}
-                                placeholder="Enter your secret key..."
-                                className="w-full border border-[#e8e8e8] rounded-[7px] px-[11px] py-[8px] text-[12px] bg-[#fafafa] outline-none focus:border-[#111] focus:bg-white transition-colors placeholder:text-[#bbb]"
-                                style={{ fontFamily: "'DM Sans', sans-serif" }}
-                              />
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── BEHAVIOUR ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setCaptchaSections((p) => ({ ...p, behaviour: !p.behaviour }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>BEHAVIOUR</span>
-                      <motion.span animate={{ rotate: captchaSections.behaviour ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {captchaSections.behaviour && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-[14px] pt-[6px] flex flex-col gap-3">
-
-                            {/* Visibility mode segmented */}
-                            <div className="flex flex-col gap-[6px]">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Visibility mode</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] rounded-[7px] p-[2px] grid grid-cols-2 gap-[2px]">
-                                {['invisible', 'visible'].map((v) => (
-                                  <button
-                                    key={v}
-                                    onClick={() => setCaptchaVisibility(v)}
-                                    className={`py-[6px] rounded-[5px] text-[11.5px] capitalize text-center cursor-pointer transition-colors ${
-                                      captchaVisibility === v
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                        : 'text-[#777] hover:text-[#444]'
-                                    }`}
-                                    style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                  >
-                                    {v.charAt(0).toUpperCase() + v.slice(1)}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.07)]" />
-
-                            {/* Show badge toggle */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Show badge</span>
-                              <button
-                                onClick={() => setCaptchaShowBadge((v) => !v)}
-                                className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${captchaShowBadge ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}
-                              >
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${captchaShowBadge ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                            {/* Badge position — only visible when badge is shown */}
-                            <AnimatePresence initial={false}>
-                              {captchaShowBadge && (
-                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.18 }} className="overflow-hidden flex flex-col gap-[6px]">
-                                  <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Badge position</span>
-                                  <div className="bg-[rgba(0,0,0,0.04)] rounded-[7px] p-[2px] grid grid-cols-3 gap-[2px]">
-                                    {[
-                                      { id: 'bottom-right', label: 'Bottom right' },
-                                      { id: 'bottom-left',  label: 'Bottom left' },
-                                      { id: 'inline',       label: 'Inline' },
-                                    ].map(({ id, label }) => (
-                                      <button
-                                        key={id}
-                                        onClick={() => setCaptchaBadgePosition(id)}
-                                        className={`py-[6px] rounded-[5px] text-[10.5px] text-center cursor-pointer transition-colors ${
-                                          captchaBadgePosition === id
-                                            ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                            : 'text-[#777] hover:text-[#444]'
-                                        }`}
-                                        style={{ fontFamily: "'DM Sans', sans-serif" }}
-                                      >
-                                        {label}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.07)]" />
-
-                            {/* Block on failure toggle */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Block on failure</span>
-                              <button
-                                onClick={() => setCaptchaBlockOnFailure((v) => !v)}
-                                className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${captchaBlockOnFailure ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}
-                              >
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${captchaBlockOnFailure ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── CONDITIONAL LOGIC ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setCaptchaSections((p) => ({ ...p, conditionalLogic: !p.conditionalLogic }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.235px] uppercase text-[#bbb]" style={{ fontFamily: "'DM Sans', sans-serif" }}>CONDITIONAL LOGIC</span>
-                      <motion.span animate={{ rotate: captchaSections.conditionalLogic ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={12} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {captchaSections.conditionalLogic && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-[14px] pt-[6px] flex flex-col gap-[10px]">
-                            <BlockVisibilityConditions
-                              conditions={showIfConditions}
-                              onChange={setShowIfConditions}
-                              priorScreens={priorScreensForActive}
-                            />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Multi-image upload Configure panel ── */}
-        <AnimatePresence>
-          {showMultiImageConfigPanel && (
-            <motion.div
-              key="multi-image-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]">Configure</span>
-                  <button onClick={() => setShowMultiImageConfigPanel(false)} className="w-[20px] h-[20px] bg-[#f0eeea] rounded-[5px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={12} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setMultiImageSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.2px] uppercase text-[#bbb]">FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: multiImageSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {multiImageSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-
-                            {/* Question */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Question</label>
-                              <input type="text" value={configureIsUpload ? uploadQuestion : multiImageQuestion} onChange={(e) => (configureIsUpload ? setUploadQuestion : setMultiImageQuestion)(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-
-                            {/* Helper text */}
-                            <div>
-                              <label className="text-[10px] font-semibold text-[#888] uppercase tracking-[0.5px] block mb-1">Helper Text</label>
-                              <input type="text" value={configureIsUpload ? uploadHelperText : multiImageHelperText} onChange={(e) => (configureIsUpload ? setUploadHelperText : setMultiImageHelperText)(e.target.value)}
-                                className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-3 py-[7px] text-[12px] bg-white outline-none focus:border-[#111] transition-colors" />
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Required toggle */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Required</span>
-                              <button onClick={() => setMultiImageRequired(p => !p)} className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${multiImageRequired ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${multiImageRequired ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                            {/* Multiple files toggle */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Multiple files</span>
-                              <button onClick={() => setMultiImageMultipleFiles(p => !p)} className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${multiImageMultipleFiles ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${multiImageMultipleFiles ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Max files stepper */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Max files</span>
-                              <div className="flex items-center gap-[6px] bg-[rgba(0,0,0,0.04)] rounded-[7px] px-[6px] py-[4px]">
-                                <button
-                                  onClick={() => setMultiImageMaxFiles(p => Math.max(1, p - 1))}
-                                  disabled={multiImageMaxFiles <= 1}
-                                  className={`w-[20px] h-[20px] rounded-[5px] bg-[rgba(255,255,255,0.8)] flex items-center justify-center transition-colors text-[14px] leading-none font-light select-none ${multiImageMaxFiles <= 1 ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer hover:bg-white text-[#111]'}`}
-                                >−</button>
-                                <span className="text-[13px] font-medium text-[#111] min-w-[28px] text-center">{multiImageMaxFiles}</span>
-                                <button
-                                  onClick={() => setMultiImageMaxFiles(p => Math.min(9, p + 1))}
-                                  disabled={multiImageMaxFiles >= 9}
-                                  className={`w-[20px] h-[20px] rounded-[5px] bg-[rgba(255,255,255,0.8)] flex items-center justify-center transition-colors text-[14px] leading-none font-light select-none ${multiImageMaxFiles >= 9 ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer hover:bg-white text-[#111]'}`}
-                                >+</button>
-                              </div>
-                            </div>
-
-                            {/* Max file size dropdown */}
-                            <div className="flex flex-col gap-[6px]">
-                              <span className="text-[12px] text-[#444]">Max file size</span>
-                              <div className="relative">
-                                <button
-                                  onClick={() => setMultiImageSizeDropdownOpen(p => !p)}
-                                  className="w-full border border-[rgba(0,0,0,0.12)] rounded-[6px] px-[11px] py-[9px] text-[12.5px] text-[#1a1a1a] bg-white flex items-center justify-between cursor-pointer hover:border-[#999] transition-colors"
-                                  style={{ borderRadius: multiImageSizeDropdownOpen ? '6px 6px 0 0' : '6px', borderColor: multiImageSizeDropdownOpen ? '#888' : undefined }}
-                                >
-                                  <span>{configureMaxFileSize}</span>
-                                  <RiArrowDownSLine size={14} className={`text-[#888] transition-transform ${multiImageSizeDropdownOpen ? 'rotate-180' : ''}`} />
-                                </button>
-                                {multiImageSizeDropdownOpen && (
-                                  <div className="absolute z-20 left-0 right-0 bg-white border border-t-0 border-[#b0b0ae] rounded-b-[6px] overflow-hidden shadow-[0px_8px_24px_rgba(0,0,0,0.1)]">
-                                    {['1 MB', '5 MB', '10 MB', '25 MB', '50 MB', '100 MB', 'No limit'].map(opt => (
-                                      <button
-                                        key={opt}
-                                        onClick={() => { setConfigureMaxFileSize(opt); setMultiImageSizeDropdownOpen(false); }}
-                                        className={`w-full flex items-center justify-between px-[10px] py-[8px] text-[12.5px] cursor-pointer transition-colors ${configureMaxFileSize === opt ? 'bg-[#ebebea] font-medium' : 'hover:bg-[#f5f4f0]'} text-[#1a1a1a]`}
-                                      >
-                                        <span>{opt}</span>
-                                        {configureMaxFileSize === opt && <span className="text-[11px]">✓</span>}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Accepted types pill toggles */}
-                            <div className="flex flex-col gap-[10px]">
-                              <span className="text-[12px] text-[#444]">Accepted types</span>
-                              <div className="flex flex-wrap gap-[6px]">
-                                {['PDF', 'PNG', 'JPG', 'DOCX', 'XLSX', 'MP4', 'ZIP', 'Any'].map(type => {
-                                  const isOn = multiImageAcceptedTypes.includes(type);
-                                  return (
-                                    <button
-                                      key={type}
-                                      onClick={() => {
-                                        if (type === 'Any') {
-                                          setMultiImageAcceptedTypes(['Any']);
-                                        } else {
-                                          setMultiImageAcceptedTypes(prev => {
-                                            const without = prev.filter(t => t !== 'Any');
-                                            return without.includes(type) ? without.filter(t => t !== type) : [...without, type];
-                                          });
-                                        }
-                                      }}
-                                      className={`px-[10px] py-[5px] rounded-[20px] text-[11px] border cursor-pointer transition-colors ${
-                                        isOn
-                                          ? 'bg-[#111] border-[#111] text-white'
-                                          : 'bg-[rgba(0,0,0,0.04)] border-[rgba(0,0,0,0.15)] text-[#444] hover:border-[#999]'
-                                      }`}
-                                    >{type}</button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button
-                      onClick={() => setMultiImageSections((p) => ({ ...p, appearance: !p.appearance }))}
-                      className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer"
-                    >
-                      <span className="text-[9.5px] font-semibold tracking-[1.2px] uppercase text-[#bbb]">APPEARANCE</span>
-                      <motion.span animate={{ rotate: multiImageSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {multiImageSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-
-                            {/* Upload zone size segmented control */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span className="text-[12px] text-[#444]">Upload zone size</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] rounded-[7px] p-[2px] grid grid-cols-3 gap-[2px]">
-                                {['Compact', 'Default', 'Large'].map(size => (
-                                  <button
-                                    key={size}
-                                    onClick={() => setMultiImageUploadZoneSize(size)}
-                                    className={`py-[6px] rounded-[5px] text-[11.5px] text-center cursor-pointer transition-colors ${
-                                      multiImageUploadZoneSize === size
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                        : 'text-[#777] hover:text-[#444]'
-                                    }`}
-                                  >{size}</button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Show preview toggle */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Show preview</span>
-                              <button onClick={() => setMultiImageShowPreview(p => !p)} className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${multiImageShowPreview ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${multiImageShowPreview ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Rating Configure panel ── */}
-        <AnimatePresence>
-          {showRatingConfigPanel && (
-            <motion.div
-              key="rating-config-panel"
-              initial={{ width: 0 }}
-              animate={{ width: 280 }}
-              exit={{ width: 0 }}
-              transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <div className="w-[280px] h-full bg-[#f7f6f4] border-l border-[#e5e3dc] flex flex-col" style={{ boxShadow: '-2px 2px 10px 0px rgba(0,0,0,0.08)' }}>
-
-                {/* Header */}
-                <div className="border-b border-[rgba(0,0,0,0.09)] flex items-center justify-between py-[13px] px-4 shrink-0">
-                  <span className="text-[13px] font-semibold text-[#111] tracking-[-0.13px]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Configure</span>
-                  <button onClick={() => setShowRatingConfigPanel(false)} className="w-[22px] h-[22px] bg-[#f2f2f2] rounded-[11px] flex items-center justify-center cursor-pointer hover:bg-[#e5e3dc] transition-colors">
-                    <RiCloseLine size={13} className="text-[#666] shrink-0" aria-hidden />
-                  </button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto">
-
-                  {/* ── FIELD SETTINGS section ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button onClick={() => setRatingSections((p) => ({ ...p, fieldSettings: !p.fieldSettings }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-semibold tracking-[1.2px] uppercase text-[#bbb]">FIELD SETTINGS</span>
-                      <motion.span animate={{ rotate: ratingSections.fieldSettings ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {ratingSections.fieldSettings && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-4">
-
-                            <div className="flex flex-col gap-[8px]">
-                              <span className="text-[12px] text-[#444]">Question</span>
-                              <input
-                                type="text"
-                                value={ratingQuestion}
-                                onChange={(e) => setRatingQuestion(e.target.value)}
-                                className="w-full bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.15)] rounded-[7px] px-[11px] py-[7px] text-[12px] text-[#111] outline-none focus:border-[#111] transition-colors"
-                              />
-                            </div>
-
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Toggles: Required, Use scale, Use slider */}
-                            {[
-                              { label: 'Required', val: ratingRequired, set: setRatingRequired },
-                              { label: 'Use scale', val: ratingUseScale, set: setRatingUseScale },
-                              { label: 'Use slider', val: ratingUseSlider, set: setRatingUseSlider },
-                            ].map(({ label, val, set }) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[12px] text-[#444]">{label}</span>
-                                <button onClick={() => set(!val)} className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${val ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                  <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${val ? 'left-[17px]' : 'left-[3px]'}`} />
-                                </button>
-                              </div>
-                            ))}
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Max rating stepper */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Max rating</span>
-                              <div className="flex items-center gap-[6px] bg-[rgba(0,0,0,0.04)] rounded-[7px] px-[6px] py-[4px]">
-                                <button
-                                  onClick={() => setRatingMaxRating((p) => Math.max(ratingStyle === '1-10' ? 10 : 2, p - 1))}
-                                  className="w-[20px] h-[20px] bg-[rgba(255,255,255,0.8)] rounded-[5px] flex items-center justify-center text-[14px] text-[#444] cursor-pointer hover:bg-white transition-colors leading-none"
-                                >−</button>
-                                <span className="text-[13px] font-medium text-[#111] min-w-[28px] text-center">{ratingStyle === '1-10' ? 10 : ratingMaxRating}</span>
-                                <button
-                                  onClick={() => { if (ratingStyle !== '1-10') setRatingMaxRating((p) => Math.min(10, p + 1)); }}
-                                  className={`w-[20px] h-[20px] bg-[rgba(255,255,255,0.8)] rounded-[5px] flex items-center justify-center text-[14px] text-[#444] leading-none transition-colors ${ratingStyle === '1-10' ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-white'}`}
-                                >+</button>
-                              </div>
-                            </div>
-
-                            {/* Rating style segmented control */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span className="text-[12px] text-[#444]">Rating style</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] rounded-[7px] p-[2px] grid grid-cols-3 gap-[2px]">
-                                {[
-                                  { val: 'Stars', icon: <RiStarLine size={14} /> },
-                                  { val: 'Hearts', icon: <RiHeartLine size={14} /> },
-                                  { val: '1-10', icon: null },
-                                ].map(({ val, icon }) => (
-                                  <button
-                                    key={val}
-                                    onClick={() => {
-                                      setRatingStyle(val);
-                                      if (val === '1-10') setRatingMaxRating(10);
-                                    }}
-                                    className={`flex items-center justify-center gap-[4px] py-[6px] rounded-[5px] text-[11.5px] text-center cursor-pointer transition-colors ${
-                                      ratingStyle === val
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                        : 'text-[#777] hover:text-[#444]'
-                                    }`}
-                                  >
-                                    {icon}
-                                    {val}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px bg-[rgba(0,0,0,0.09)]" />
-
-                            {/* Low label */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span className="text-[12px] text-[#444]">Low label</span>
-                              <input
-                                type="text"
-                                value={ratingLowLabel}
-                                onChange={(e) => setRatingLowLabel(e.target.value)}
-                                className="w-full bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.15)] rounded-[7px] px-[11px] py-[7px] text-[12px] text-[#111] outline-none focus:border-[#111] transition-colors"
-                              />
-                            </div>
-
-                            {/* High label */}
-                            <div className="flex flex-col gap-[8px]">
-                              <span className="text-[12px] text-[#444]">High label</span>
-                              <input
-                                type="text"
-                                value={ratingHighLabel}
-                                onChange={(e) => setRatingHighLabel(e.target.value)}
-                                className="w-full bg-[rgba(0,0,0,0.04)] border border-[rgba(0,0,0,0.15)] rounded-[7px] px-[11px] py-[7px] text-[12px] text-[#111] outline-none focus:border-[#111] transition-colors"
-                              />
-                            </div>
-
-                            {/* Show labels toggle */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Show labels</span>
-                              <button onClick={() => setRatingShowLabels((p) => !p)} className={`w-[34px] h-[20px] rounded-[10px] relative transition-colors appearance-none border-0 p-0 ${ratingShowLabels ? 'bg-[#2a9d6e]' : 'bg-[#e4e2dc]'}`}>
-                                <span className={`absolute top-[3px] w-[14px] h-[14px] rounded-[7px] bg-white transition-all ${ratingShowLabels ? 'left-[17px]' : 'left-[3px]'}`} />
-                              </button>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  {/* ── APPEARANCE section ── */}
-                  <div className="border-b border-[rgba(0,0,0,0.09)]">
-                    <button onClick={() => setRatingSections((p) => ({ ...p, appearance: !p.appearance }))} className="flex items-center justify-between w-full px-4 py-[10px] cursor-pointer">
-                      <span className="text-[9.5px] font-semibold tracking-[1.2px] uppercase text-[#bbb]">APPEARANCE</span>
-                      <motion.span animate={{ rotate: ratingSections.appearance ? 180 : 0 }} transition={{ duration: 0.2 }} className="flex items-center shrink-0">
-                        <RiArrowDownSLine size={14} className="text-[#bbb]" />
-                      </motion.span>
-                    </button>
-                    <AnimatePresence initial={false}>
-                      {ratingSections.appearance && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                          <div className="px-4 pb-4 flex flex-col gap-3">
-
-                            {/* Icon size */}
-                            <div className="flex items-center justify-between">
-                              <span className="text-[12px] text-[#444]">Icon size</span>
-                              <div className="bg-[rgba(0,0,0,0.04)] rounded-[7px] p-[2px] grid grid-cols-3 gap-[2px] w-[145px]">
-                                {['S', 'M', 'L'].map((s) => (
-                                  <button
-                                    key={s}
-                                    onClick={() => setRatingIconSize(s)}
-                                    className={`py-[6px] rounded-[5px] text-[11.5px] text-center cursor-pointer transition-colors ${
-                                      ratingIconSize === s
-                                        ? 'bg-white border border-[rgba(0,0,0,0.09)] text-[#111] font-medium shadow-[0px_1px_1px_rgba(0,0,0,0.08)]'
-                                        : 'text-[#777] hover:text-[#444]'
-                                    }`}
-                                  >{s}</button>
-                                ))}
-                              </div>
-                            </div>
-
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── If / Then Logic panel (Logic tab) ── */}
-        <AnimatePresence>
-          {ifThenLogicPanelEdge != null && ifThenDraft && activeTab === 'logic' && (() => {
-            const { from, to } = ifThenLogicPanelEdge;
-            const logicScreen = screens.find((s) => s.id === from);
-            if (!logicScreen) return null;
-            const fromLabel = logicScreen.label || logicScreen.name || 'Screen';
-            const toScreen = to != null ? screens.find((s) => s.id === to) : null;
-            const toLabel = toScreen
-              ? getLogicCardQuestionText(toScreen) || toScreen.name || toScreen.label || 'Screen'
-              : null;
-            const screenSubtitle =
-              toLabel != null ? `${fromLabel} → ${toLabel}` : `${fromLabel} Screen`;
-            return (
-              <motion.div
-                key="if-then-logic-panel"
-                initial={{ width: 0 }}
-                animate={{ width: 320 }}
-                exit={{ width: 0 }}
-                transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                className="absolute right-0 top-0 bottom-0 z-[70] shrink-0 overflow-visible h-full pointer-events-auto"
-              >
-                <IfThenLogicPanel
-                  screenSubtitle={screenSubtitle}
-                  questionOptions={getLogicQuestionOptionsForForm()}
-                  destinationOptions={[
-                    ...screens
-                      .filter((s) => s.type === 'content' && s.id !== from)
-                      .map((s) => ({
-                        id: s.id,
-                        label: getLogicCardQuestionText(s) || s.name || s.label || 'Screen',
-                      })),
-                    ...(screens.find((s) => s.type === 'end')
-                      ? [{ id: screens.find((s) => s.type === 'end').id, label: 'End screen' }]
-                      : []),
-                  ]}
-                  draft={ifThenDraft}
-                  onDraftChange={setIfThenDraft}
-                  onClose={closeIfThenLogicPanel}
-                  onCancel={cancelIfThenLogicPanel}
-                  onSave={saveIfThenLogic}
-                />
-              </motion.div>
-            );
-          })()}
-        </AnimatePresence>
-
-        {/* ── Design / Customization panel (right) ── */}
-        <AnimatePresence>
-        {showDesignPanel && (
-          <motion.div
-            key="design-panel"
-            initial={{ width: 0 }}
-            animate={{ width: 280 }}
-            exit={{ width: 0 }}
-            transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-            className="shrink-0 overflow-hidden"
-          >
-          <div
-            className="w-[280px] h-full bg-[#f7f7f8] border-l border-[#e4e2dc] flex flex-col"
-            style={{ boxShadow: '-2px 2px 5px rgba(0,0,0,0.1)' }}
-          >
-            {/* Header */}
-            <div className="h-[40px] border-b border-[#e4e2dc] flex items-center justify-between px-4 shrink-0">
-              <span className="text-[14px] font-semibold text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                Customization
-              </span>
-              <button
-                onClick={() => { setShowDesignPanel(false); setActiveTab('content'); }}
-                className="flex items-center justify-center cursor-pointer text-[#7a7a72] text-[18px] leading-none hover:text-[#1a1a1a] transition-colors"
-              >
-                ×
-              </button>
-            </div>
-
-            {/* Scrollable content */}
-            <div className="flex-1 overflow-y-auto">
-
-              {/* ── LAYOUT STYLE ── */}
-              <div className="border-b border-[#e4e2dc] flex flex-col gap-3 px-4 py-4">
-                <span className="text-[10px] font-semibold tracking-[0.6px] uppercase text-[#7a7a72]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                  Layout Style
-                </span>
-                <div className="bg-[#f1f1f1] rounded-[8px] p-[3px] grid grid-cols-2 gap-1">
-                  {[
-                    { id: 'withCard', label: 'With card' },
-                    { id: 'fullCanvas', label: 'Full Canvas' },
-                  ].map(({ id, label }) => (
-                    <button
-                      key={id}
-                      onClick={() => setDesignLayoutStyle(id)}
-                      className={`py-[7px] rounded-[6px] text-[12px] font-medium text-center cursor-pointer transition-colors ${
-                        designLayoutStyle === id
-                          ? 'bg-white text-black shadow-[0px_4px_2px_rgba(0,0,0,0.1)]'
-                          : 'text-[#7a7a72] hover:text-[#1a1a1a]'
-                      }`}
-                      style={{ fontFamily: "'DM Sans', sans-serif" }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* ── BACKGROUND ── */}
-              <div className="border-b border-[#e3e1da] flex flex-col gap-2 px-4 py-[13px]">
-                {/* Theme preview card — clickable to open overlay */}
-                <button
-                  onClick={() => setShowThemeOverlay(true)}
-                  className="bg-white border border-[rgba(81,76,84,0.15)] rounded-[12px] overflow-hidden w-full text-left hover:border-[rgba(81,76,84,0.35)] transition-colors cursor-pointer"
-                >
-                  <div
-                    className="h-[80px] p-4 flex items-start transition-colors duration-300"
-                    style={designCardImage
-                      ? { backgroundImage: `url(${designCardImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-                      : { backgroundColor: hexToRgba(designCardColor, designCardOpacity) }}
-                  >
-                    <div className="flex flex-col gap-[2px]">
-                      <span className="text-[#262627] text-[13px] leading-5" style={{ fontFamily: "'Inter', sans-serif" }}>Question</span>
-                      <span className="text-[#262627] text-[13px] leading-5" style={{ fontFamily: "'Inter', sans-serif" }}>Answer</span>
-                      <div className="mt-1 bg-[#262627] rounded-[4px] h-[14px] w-[34px]" />
-                    </div>
-                  </div>
-                  <div className="px-4 py-3 flex items-center justify-between">
-                    <span className="text-[#3c323e] text-[13px] font-semibold" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                      {THEMES.find(t => t.id === activeThemeId)?.name ?? 'Custom'}
-                    </span>
-                    <RiArrowRightLine size={14} className="text-[#9a9a92] shrink-0" />
-                  </div>
-                </button>
-
-                <span className="text-[10px] font-bold tracking-[0.76px] uppercase text-[#8c8a84]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                  Background
-                </span>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { color: '#f7edfc', border: '#111', isOutline: true },
-                    { color: '#f0eee8', border: '#e3e1da', isOutline: false },
-                    { color: '#111111', border: 'transparent', isOutline: false },
-                  ].map(({ color, border, isOutline }) => (
-                    <button
-                      key={color}
-                      onClick={() => setDesignBackground(color)}
-                      className="h-[48px] rounded-[8px] cursor-pointer transition-all relative"
-                      style={{
-                        backgroundColor: color,
-                        border: designBackground === color
-                          ? `2px solid #1a1a1a`
-                          : isOutline ? `1px solid ${border}` : `1px solid ${border}`,
-                        outline: designBackground === color ? '2px solid rgba(26,26,26,0.2)' : 'none',
-                        outlineOffset: '2px',
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* ── CARD COLOR ── */}
-              <div className="border-b border-[#e4e2dc] flex flex-col gap-3 px-4 py-4">
-                <span className="text-[10px] font-semibold tracking-[0.6px] uppercase text-[#7a7a72]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                  Card Color
-                </span>
-                <div className="flex items-center gap-[6px]">
-                  {['#f9f9fa', '#1a1a2e', '#4a5568'].map((color) => (
-                    <button
-                      key={color}
-                      onClick={() => { setDesignCardColor(color); setDesignCardImage(null); setActiveThemeId(null); }}
-                      className="w-[28px] h-[28px] rounded-full cursor-pointer transition-transform hover:scale-110"
-                      style={{
-                        background: color,
-                        border: color === '#f9f9fa' ? '1px solid #e5e5e3' : 'none',
-                        outline: designCardColor === color ? '2px solid #111' : 'none',
-                        outlineOffset: 2,
-                      }}
-                    />
-                  ))}
-                  <button
-                    onClick={() => setDesignCardColorGridOpen((v) => !v)}
-                    className="w-[28px] h-[28px] rounded-full border border-dashed border-[#c0c0be] flex items-center justify-center text-[#9a9a9a] text-[14px] leading-none cursor-pointer hover:bg-white/50"
-                  >
-                    +
-                  </button>
-                </div>
-                {/* Color grid */}
-                <div
-                  style={{
-                    overflow: 'hidden',
-                    maxHeight: designCardColorGridOpen ? '400px' : '0',
-                    opacity: designCardColorGridOpen ? 1 : 0,
-                    transition: 'max-height 0.25s ease, opacity 0.2s ease',
-                  }}
-                >
-                  <div className="bg-white border border-[#e5e5e3] rounded-[8px] p-[11px] flex flex-col gap-2 mb-1">
-                    <div className="grid grid-cols-8 gap-1">
-                      {CTA_COLOR_PALETTE.flat().map((color, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => {
-                            setDesignCardColor(color);
-                            setDesignCardImage(null);
-                            setActiveThemeId(null);
-                            setDesignCardColorGridOpen(false);
-                          }}
-                          className="aspect-square rounded-[3px] cursor-pointer hover:scale-110 transition-transform"
-                          style={{
-                            background: color,
-                            border: idx === 0 ? '1px solid #d8d8d6' : '1px solid rgba(0,0,0,0.07)',
-                            outline: designCardColor === color ? '2px solid #1a1a1a' : 'none',
-                            outlineOffset: 1,
-                          }}
-                        />
-                      ))}
-                    </div>
-                    {/* Hex input row */}
-                    <div className="border-t border-[#ebebea] pt-[9px] flex items-center gap-[6px]">
-                      <div
-                        className="w-[22px] h-[22px] rounded-[4px] border border-[#d8d8d6] shrink-0"
-                        style={{ background: designCardColor }}
-                      />
-                      <span className="text-[11.5px] text-[#9a9a9a] shrink-0" style={{ fontFamily: 'Courier New, monospace' }}>#</span>
-                      <input
-                        type="text"
-                        value={designCardColor.replace('#', '').toUpperCase()}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          if (/^[0-9A-Fa-f]{0,6}$/.test(val)) { setDesignCardColor('#' + val); setDesignCardImage(null); setActiveThemeId(null); }
-                        }}
-                        className="flex-1 text-[11.5px] text-[#9a9a9a] uppercase outline-none bg-transparent min-w-0"
-                        style={{ fontFamily: 'Courier New, monospace' }}
-                        maxLength={6}
-                      />
-                      <button className="px-2 py-1 border border-[#e0e0de] rounded-[4px] text-[10.5px] text-[#9a9a9a] shrink-0 cursor-pointer hover:bg-[#f5f5f5] transition-colors">
-                        Custom
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* ── CARD OPACITY ── */}
-              <div className="border-b border-[#e4e2dc] flex flex-col gap-2 px-4 py-4">
-                <span className="text-[9.5px] font-medium tracking-[1.235px] uppercase text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                  Card Opacity
-                </span>
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Transparent</span>
-                    <span className="text-[10px] text-[#aaa]" style={{ fontFamily: "'DM Sans', sans-serif" }}>Opaque</span>
-                  </div>
-                  <div className="relative h-[3px] rounded-full w-full" style={{ background: `linear-gradient(to right, #1a1a1a ${designCardOpacity}%, #e0ddd8 ${designCardOpacity}%)` }}>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={designCardOpacity}
-                      onChange={(e) => setDesignCardOpacity(Number(e.target.value))}
-                      className="absolute inset-0 w-full opacity-0 cursor-pointer h-[14px] -top-[5px]"
-                    />
-                    <div
-                      className="absolute w-[14px] h-[14px] bg-[#1a1a1a] rounded-full -top-[5.5px] -translate-x-1/2 pointer-events-none"
-                      style={{
-                        left: `${designCardOpacity}%`,
-                        boxShadow: '0 0 0 2.5px white, 0 0 0 4px rgba(0,0,0,0.15)',
-                      }}
-                    />
-                  </div>
-                  <div className="flex justify-end pt-1">
-                    <span className="text-[10px] font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>{designCardOpacity}%</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* ── TEXT COLOR ── */}
-              <div className="border-b border-[#e4e2dc] flex flex-col gap-3 px-4 py-4">
-                <span className="text-[10px] font-semibold tracking-[0.6px] uppercase text-[#7a7a72]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                  Text Color
-                </span>
-                <div className="flex items-center gap-[6px]">
-                  {[
-                    { color: '#198eea' },
-                    { color: '#3d3d3d' },
-                    { color: '#ffffff', border: '#e4e2dc' },
-                  ].map(({ color, border }) => (
-                    <button
-                      key={color}
-                      onClick={() => setDesignTextColor(color)}
-                      className="w-[32px] h-[32px] rounded-full cursor-pointer transition-all"
-                      style={{
-                        backgroundColor: color,
-                        border: designTextColor === color
-                          ? `2px solid transparent`
-                          : border ? `1px solid ${border}` : `2px solid transparent`,
-                        outline: designTextColor === color ? '2px solid rgba(0,0,0,0.3)' : 'none',
-                        outlineOffset: '1.5px',
-                      }}
-                    />
-                  ))}
-                  <button className="w-[32px] h-[32px] rounded-full bg-white border border-dashed border-[#e4e2dc] flex items-center justify-center cursor-pointer hover:bg-[#f5f4f0] transition-colors">
-                    <span className="text-[#1a1a1a] text-[16px] leading-none font-light">+</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* ── TYPOGRAPHY ── */}
-              <div className="border-b border-[#e4e2dc] flex flex-col gap-2 px-4 py-4">
-                <span className="text-[10px] font-semibold tracking-[0.6px] uppercase text-[#7a7a72]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
-                  Typography
-                </span>
-                <div className="flex flex-col">
-                  {[
-                    { id: 'default', label: 'Default', preview: 'The quick brown fox', fontFamily: "'DM Sans', sans-serif", fontFamilyPreview: "'DM Sans', sans-serif" },
-                    { id: 'serif', label: 'Serif', preview: 'The quick brown fox', fontFamily: 'Georgia, serif', fontFamilyPreview: 'Georgia, serif' },
-                    { id: 'monospace', label: 'Monospace', preview: 'The quick brown fox', fontFamily: 'Consolas, monospace', fontFamilyPreview: 'Consolas, monospace' },
-                  ].map(({ id, label, preview, fontFamily, fontFamilyPreview }) => (
-                    <button
-                      key={id}
-                      onClick={() => setDesignTypography(id)}
-                      className={`flex items-center justify-between px-[10px] py-[8px] rounded-[6px] w-full text-left cursor-pointer transition-colors ${
-                        designTypography === id ? 'bg-[#f5f4f0]' : 'hover:bg-[#f5f4f0]/60'
-                      }`}
-                    >
-                      <div className="flex flex-col gap-[2px]">
-                        <span className="text-[13px] font-medium text-[#1a1a1a]" style={{ fontFamily }}>
-                          {label}
-                        </span>
-                        <span className="text-[11px] text-[#7a7a72]" style={{ fontFamily: fontFamilyPreview }}>
-                          {preview}
-                        </span>
-                      </div>
-                      {designTypography === id && (
-                        <RiCheckLine size={14} className="text-[#1a1a1a] shrink-0" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-            </div>
-          </div>
-          </motion.div>
-        )}
-        </AnimatePresence>
-        </>}
+        {!isPreview && <FormBuilderRightPanels {...builderPanelBindings} />}
 
       </div>
       </LayoutGroup>
@@ -14405,10 +7513,7 @@ const FormBuilderPage = () => {
       <PublishFormModal
         open={publishModalOpen}
         onCancel={() => setPublishModalOpen(false)}
-        onConfirm={() => {
-          setPublishModalOpen(false);
-          setIsPublishView(true);
-        }}
+        onConfirm={handlePublishForm}
       />
     </div>
   );

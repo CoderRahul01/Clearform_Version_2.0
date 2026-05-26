@@ -1,7 +1,15 @@
 import { createSlice, createSelector } from '@reduxjs/toolkit';
-import { NAV_WORKSPACES } from '../../constants';
 import { readPersistedForms, clearUserForms } from '@/features/forms/utils/userFormsStorage';
-import { readWorkspaces } from '@/features/forms/utils/workspacesStorage';
+import {
+  readAllFormResponses,
+  clearFormResponses,
+} from '@/features/forms/utils/formResponsesStorage';
+import {
+  readWorkspaces,
+  clearWorkspaces,
+  syncWorkspaceCounts,
+  countNavForms,
+} from '@/features/forms/utils/workspacesStorage';
 import { readFormsUi } from '@/features/forms/utils/formsUiStorage';
 
 // Convert a "Xm/Xh/Xd/Xw ago" string to milliseconds so we can sort by recency
@@ -15,18 +23,35 @@ function timeAgoToMs(timeAgo) {
 }
 
 const savedUi = readFormsUi();
+const initialWorkspaces = readWorkspaces() ?? [];
+const initialActiveWorkspace =
+  savedUi.activeWorkspace !== 'all' &&
+  !initialWorkspaces.some((w) => w.id === savedUi.activeWorkspace)
+    ? 'all'
+    : savedUi.activeWorkspace;
+
+const bootstrapResponses = readAllFormResponses();
+const bootstrapForms = readPersistedForms().map((form) => ({
+  ...form,
+  responses: (bootstrapResponses[String(form.id)] ?? []).length,
+}));
 
 const initialState = {
-  forms: readPersistedForms(),
-  workspaces: readWorkspaces() ?? NAV_WORKSPACES,
+  forms: bootstrapForms,
+  workspaces: syncWorkspaceCounts(initialWorkspaces, bootstrapForms),
   activeFilter: savedUi.activeFilter,
-  activeWorkspace: savedUi.activeWorkspace,
+  activeWorkspace: initialActiveWorkspace,
   searchQuery: savedUi.searchQuery,
   showTemplateBanner: savedUi.showTemplateBanner,
   viewMode: savedUi.viewMode,
   sortOrder: savedUi.sortOrder,
   isLoading: false,
   advancedFilters: savedUi.advancedFilters ?? { status: [], responses: [] },
+  responsesByFormId: bootstrapResponses,
+};
+
+const applyWorkspaceCounts = (state) => {
+  state.workspaces = syncWorkspaceCounts(state.workspaces, state.forms);
 };
 
 const formsSlice = createSlice({
@@ -56,11 +81,13 @@ const formsSlice = createSlice({
     },
     addForm(state, action) {
       state.forms.unshift(action.payload);
+      applyWorkspaceCounts(state);
     },
     updateForm(state, action) {
       const { id, changes } = action.payload;
       const form = state.forms.find((f) => f.id === id);
       if (form) Object.assign(form, changes);
+      applyWorkspaceCounts(state);
     },
     setFormPause(state, action) {
       const { formId, endLabel, endTimestamp, pauseType, viewYear, viewMonth, selDay, hour, minute, ampm } = action.payload;
@@ -91,7 +118,23 @@ const formsSlice = createSlice({
       if (state.activeWorkspace === workspaceId) state.activeWorkspace = 'all';
     },
     deleteForm(state, action) {
-      state.forms = state.forms.filter((f) => f.id !== action.payload);
+      const formId = action.payload;
+      state.forms = state.forms.filter((f) => f.id !== formId);
+      delete state.responsesByFormId[String(formId)];
+      applyWorkspaceCounts(state);
+    },
+    addFormResponse(state, action) {
+      const response = action.payload;
+      const key = String(response.formId);
+      if (!state.responsesByFormId[key]) {
+        state.responsesByFormId[key] = [];
+      }
+      state.responsesByFormId[key].unshift(response);
+      const form = state.forms.find((f) => f.id === response.formId);
+      if (form) {
+        form.responses = (form.responses ?? 0) + 1;
+        form.timeAgo = 'just now';
+      }
     },
     archiveForm(state, action) {
       const form = state.forms.find((f) => f.id === action.payload);
@@ -109,12 +152,16 @@ const formsSlice = createSlice({
     },
     resetFormsForOnboarding(state) {
       state.forms = [];
+      state.workspaces = [];
+      state.responsesByFormId = {};
       state.showTemplateBanner = true;
       state.activeFilter = 'all';
       state.activeWorkspace = 'all';
       state.searchQuery = '';
       state.isLoading = false;
       clearUserForms();
+      clearWorkspaces();
+      clearFormResponses();
     },
   },
 });
@@ -135,6 +182,7 @@ export const {
   renameWorkspace,
   deleteWorkspace,
   deleteForm,
+  addFormResponse,
   archiveForm,
   unarchiveForm,
   setAdvancedFilters,
@@ -147,11 +195,34 @@ export const {
 // dispatch (including unrelated toast/modal dispatches), which caused every
 // consumer of useSelector(selectFilteredForms) to re-render needlessly.
 const selectFormsRaw         = (state) => state.forms.forms;
+const selectWorkspacesRaw    = (state) => state.forms.workspaces;
 const selectActiveFilter     = (state) => state.forms.activeFilter;
 const selectActiveWorkspace  = (state) => state.forms.activeWorkspace;
 const selectSearchQuery      = (state) => state.forms.searchQuery;
 const selectSortOrder        = (state) => state.forms.sortOrder;
 const selectAdvancedFilters  = (state) => state.forms.advancedFilters;
+const selectResponsesByFormId = (state) => state.forms.responsesByFormId;
+
+/** Workspaces with form counts derived from the live forms list (sidebar, chips). */
+export const selectNavWorkspaces = createSelector(
+  [selectWorkspacesRaw, selectFormsRaw],
+  (workspaces, forms) => syncWorkspaceCounts(workspaces, forms),
+);
+
+/** Total non-archived forms — matches what users see under “All forms”. */
+export const selectTotalFormCount = createSelector([selectFormsRaw], (forms) =>
+  countNavForms(forms),
+);
+
+/** Stored responses for a form (newest first). */
+export const selectFormResponses = createSelector(
+  [selectResponsesByFormId, (_state, formId) => formId],
+  (byFormId, formId) => {
+    if (formId == null) return [];
+    const list = byFormId[String(formId)];
+    return Array.isArray(list) ? list : [];
+  },
+);
 
 export const selectFilteredForms = createSelector(
   [

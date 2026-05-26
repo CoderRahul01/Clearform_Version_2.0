@@ -1,8 +1,8 @@
-export { FREE_PLAN } from '@/features/profile/utils/profileBillingPlans';
+export { FREE_PLAN, PILOT_PLAN } from '@/features/profile/utils/profileBillingPlans';
 
-/** Demo usage aligned with Figma (2869:1259) — responses near monthly cap. */
+/** @deprecated Use getWorkspaceUsageMetrics — kept for legacy imports only. */
 export const DEFAULT_BILLING_USAGE = {
-  responsesThisMonth: 91,
+  responsesThisMonth: 0,
 };
 
 export const NEAR_LIMIT_RATIO = 0.9;

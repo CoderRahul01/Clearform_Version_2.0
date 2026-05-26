@@ -12,7 +12,6 @@ export const BLOCK_VISIBILITY_LABELS = new Set([
   'Images',
   'Media',
   'Captcha',
-  'Maps',
 ]);
 
 /** Card types best suited as branching decision points (Layer A). */
@@ -38,10 +37,13 @@ const pickAltDest = (destinations, endId) => {
   return endId ?? destinations[0]?.id ?? null;
 };
 
-const questionForScreen = (questionOptions, fromScreenId) =>
-  questionOptions.find((o) => Number(o.sourceScreenId) === Number(fromScreenId)) ??
-  questionOptions[0] ??
-  null;
+export function questionForScreen(questionOptions, fromScreenId) {
+  return (
+    questionOptions.find((o) => Number(o.sourceScreenId) === Number(fromScreenId)) ??
+    questionOptions[0] ??
+    null
+  );
+}
 
 const condFromQuestion = (question, operator, value = '') => ({
   id: `cond-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
@@ -96,7 +98,7 @@ export function getSuggestedFlowLogic(
 
     case 'Multiple': {
       const q = questionOptions.find((o) => o.screenLabel === 'Multiple') ?? fromQuestion;
-      return { rules: [branchRule(q, 'includes')], elseScreenId };
+      return { rules: [branchRule(q, 'is_not_empty')], elseScreenId };
     }
 
     case 'Rating': {
@@ -106,10 +108,14 @@ export function getSuggestedFlowLogic(
 
     case 'Date':
     case 'Time':
-    case 'Maps':
-    case 'Captcha':
-    case 'Upload':
-    case 'Multi-image upload':
+      return { rules: [branchRule(fromQuestion, 'is_not_empty')], elseScreenId };
+
+    case 'Short text':
+    case 'Long text':
+    case 'Contact':
+    case 'Address':
+    case 'Work Info':
+    case 'Images':
       return { rules: [branchRule(fromQuestion, 'is_not_empty')], elseScreenId };
 
     default:
@@ -117,10 +123,10 @@ export function getSuggestedFlowLogic(
         return { rules: [emptyRule()], elseScreenId };
       }
       if (FLOW_PASSTHROUGH_LABELS.has(screenLabel)) {
-        return { rules: [{ ...createEmptyRule(questionOptions), thenScreenId: elseScreenId }], elseScreenId };
+        return { rules: [{ ...createEmptyRule(questionOptions, fromScreenId), thenScreenId: elseScreenId }], elseScreenId };
       }
       return {
-        rules: [{ ...createEmptyRule(questionOptions), thenScreenId: altDest }],
+        rules: [{ ...createEmptyRule(questionOptions, fromScreenId), thenScreenId: altDest }],
         elseScreenId,
       };
   }

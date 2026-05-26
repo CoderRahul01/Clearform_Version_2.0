@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { motion, AnimatePresence } from 'motion/react';
-import { RiEditLine, RiSettings3Line, RiDeleteBinLine } from 'react-icons/ri';
+import { RiEditLine, RiDeleteBinLine } from 'react-icons/ri';
 import {
   closeWorkspaceContextMenu,
   openRenameWorkspaceModal,
@@ -39,10 +39,6 @@ const WorkspaceContextMenu = () => {
     }));
   };
 
-  const handleSettings = () => {
-    dispatch(closeWorkspaceContextMenu());
-  };
-
   const handleDelete = () => {
     dispatch(openDeleteWorkspaceModal({
       workspaceId,
@@ -75,15 +71,6 @@ const WorkspaceContextMenu = () => {
               Rename
             </div>
             <span className="text-[11px] text-[#a8a6a0] font-normal">⌘R</span>
-          </button>
-
-          {/* Settings */}
-          <button
-            onClick={handleSettings}
-            className="w-full flex items-center gap-3 px-3.5 py-[7px] text-[13px] font-medium text-[#1a1a1c] leading-[19.5px] hover:bg-[#f4f3ef] transition-colors cursor-pointer"
-          >
-            <RiSettings3Line size={14} className="text-[#6b6966]" />
-            Settings
           </button>
 
           {/* Divider */}

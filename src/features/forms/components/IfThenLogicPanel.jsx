@@ -1,13 +1,51 @@
 import { useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { RiAddLine, RiCloseLine, RiDeleteBin6Line } from 'react-icons/ri';
 import LogicFieldPicker from '@/features/forms/components/LogicFieldPicker';
+import LogicOperatorPicker from '@/features/forms/components/LogicOperatorPicker';
 import LogicScreenPicker from '@/features/forms/components/LogicScreenPicker';
-import { getLogicFieldById, findLogicQuestionOption, parseLogicQuestionKey, logicQuestionKey } from '@/features/forms/constants/logicFieldCatalog';
+import LogicValueInput from '@/features/forms/components/LogicValueInput';
+import {
+  getLogicFieldById,
+  findLogicQuestionOption,
+  parseLogicQuestionKey,
+  logicQuestionKey,
+  isChoiceLogicFieldId,
+} from '@/features/forms/constants/logicFieldCatalog';
 import {
   getOperatorsForFieldId,
-  isNumericFieldId,
   validateIfThenDraft,
 } from '@/features/forms/utils/logicEngine';
+import { questionForScreen } from '@/features/forms/utils/logicCardDefaults';
+
+const choiceOperatorHint = (cond, questionOptions) => {
+  if (!isChoiceLogicFieldId(cond.fieldId)) return null;
+  const opt = findLogicQuestionOption(questionOptions, cond.sourceScreenId, cond.fieldId);
+  const screenLabel = opt?.screenLabel;
+  if (screenLabel === 'Single') {
+    if (cond.operator === 'eq') {
+      return 'Single choice: "is" matches the one selected option.';
+    }
+    if (cond.operator === 'includes') {
+      return 'Single choice: "includes" matches if that option is selected (same as "is" here).';
+    }
+  }
+  if (screenLabel === 'Multiple') {
+    if (cond.operator === 'eq') {
+      return 'Multiple: "is" compares the full selection text (all picks, exact order).';
+    }
+    if (cond.operator === 'includes') {
+      return 'Multiple: "includes" matches if that option is among the selected picks.';
+    }
+    if (cond.operator === 'is_not_empty') {
+      return 'Multiple: true when at least one option is selected.';
+    }
+  }
+  if (cond.operator === 'includes' || cond.operator === 'not_includes') {
+    return 'Matches if this choice is selected.';
+  }
+  return null;
+};
 
 const operatorSymbol = (id) => {
   const map = {
@@ -27,8 +65,8 @@ const operatorSymbol = (id) => {
   return map[id] ?? id;
 };
 
-const createEmptyCondition = (questionOptions = []) => {
-  const first = questionOptions[0];
+const createEmptyCondition = (questionOptions = [], fromScreenId = null) => {
+  const first = questionForScreen(questionOptions, fromScreenId);
   const fieldId = first?.fieldId ?? '';
   const ops = getOperatorsForFieldId(fieldId);
   return {
@@ -40,9 +78,9 @@ const createEmptyCondition = (questionOptions = []) => {
   };
 };
 
-export const createEmptyRule = (questionOptions = []) => ({
+export const createEmptyRule = (questionOptions = [], fromScreenId = null) => ({
   id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  conditions: [createEmptyCondition(questionOptions)],
+  conditions: [createEmptyCondition(questionOptions, fromScreenId)],
   thenScreenId: null,
 });
 
@@ -54,44 +92,12 @@ const conditionPickerValue = (cond, questionOptions) => {
   return match?.id ?? questionOptions[0]?.id ?? '';
 };
 
-const LogicSelect = ({ value, onChange, options, className = '' }) => (
-  <select
-    value={value ?? ''}
-    onChange={(e) => onChange(e.target.value)}
-    className={`bg-white border border-[#e4e4e7] rounded-[5px] px-[9px] py-[6px] text-[12px] text-[#18181b] outline-none cursor-pointer min-w-0 ${className}`}
-    style={{ fontFamily: "'DM Sans', sans-serif" }}
-  >
-    {options.map((opt) => (
-      <option key={opt.id} value={opt.id}>
-        {opt.label}
-      </option>
-    ))}
-  </select>
-);
-
-const LogicValueInput = ({ fieldId, operator, value, onChange, className = '' }) => {
-  const hideValue = operator === 'is_empty' || operator === 'is_not_empty';
-  if (hideValue) {
-    return <span className={`text-[11px] text-[#a1a1aa] px-1 ${className}`}>—</span>;
-  }
-
-  const numeric = isNumericFieldId(fieldId);
-  return (
-    <input
-      type={numeric ? 'number' : 'text'}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={numeric ? '0' : '…'}
-      className={`bg-white border border-[#e4e4e7] rounded-[5px] px-[9px] py-[6px] text-[12px] text-[#18181b] outline-none min-w-0 ${className}`}
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
-    />
-  );
-};
-
 const IfThenLogicPanel = ({
   screenSubtitle,
   /** All question cards in the form (sidebar list) — one option per card */
   questionOptions = [],
+  screens = [],
+  fromScreenId = null,
   destinationOptions,
   draft,
   onDraftChange,
@@ -193,7 +199,7 @@ const IfThenLogicPanel = ({
       ...draft,
       rules: draft.rules.map((r) =>
         r.id === ruleId
-          ? { ...r, conditions: [...r.conditions, createEmptyCondition(questionOptions)] }
+          ? { ...r, conditions: [...r.conditions, createEmptyCondition(questionOptions, fromScreenId)] }
           : r
       ),
     });
@@ -203,7 +209,7 @@ const IfThenLogicPanel = ({
     const lastThen = draft.rules[draft.rules.length - 1]?.thenScreenId ?? null;
     onDraftChange({
       ...draft,
-      rules: [...draft.rules, { ...createEmptyRule(questionOptions), thenScreenId: lastThen }],
+      rules: [...draft.rules, { ...createEmptyRule(questionOptions, fromScreenId), thenScreenId: lastThen }],
     });
   };
 
@@ -272,87 +278,115 @@ const IfThenLogicPanel = ({
           </div>
         ) : null}
 
-        {(draft.rules ?? []).map((rule, ruleIndex) => (
-          <div key={rule.id} className="flex flex-col gap-[7px]">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#a1a1aa]">
-                RULE {ruleIndex + 1} — CONDITION
-              </p>
-              {(draft.rules ?? []).length > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => removeRule(rule.id)}
-                  className="shrink-0 p-0.5 text-[#a1a1aa] hover:text-[#dc2626] cursor-pointer transition-colors"
-                  aria-label={`Delete rule ${ruleIndex + 1}`}
-                >
-                  <RiDeleteBin6Line size={14} />
-                </button>
-              ) : null}
-            </div>
-
-            <div className="bg-[#f5f5f4] border border-[#e4e4e7] rounded-[6px] px-[11px] pt-[11px] pb-[19px] flex flex-col gap-2 overflow-visible">
-              {rule.conditions.map((cond, condIdx) => (
-                <div key={cond.id} className="flex flex-col gap-1 w-full">
-                  {condIdx > 0 ? (
-                    <span className="text-[10px] font-semibold text-[#a1a1aa] uppercase tracking-wide pl-0.5">
-                      AND
-                    </span>
-                  ) : null}
-                  <div className="flex gap-[6px] items-start flex-wrap">
-                    <LogicFieldPicker
-                      value={conditionPickerValue(cond, questionOptions)}
-                      onChange={(v) => updateCondition(rule.id, cond.id, { fieldId: v })}
-                      options={questionOptions}
-                      className="flex-[1_1_140px] max-w-[180px] z-[1]"
-                    />
-                    <LogicSelect
-                      value={cond.operator}
-                      onChange={(v) => updateCondition(rule.id, cond.id, { operator: v })}
-                      options={getOperatorsForFieldId(cond.fieldId)}
-                      className="flex-[1_1_100px] max-w-[130px]"
-                    />
-                    <LogicValueInput
-                      fieldId={cond.fieldId}
-                      operator={cond.operator}
-                      value={cond.value}
-                      onChange={(v) => updateCondition(rule.id, cond.id, { value: v })}
-                      className="w-[52px] shrink-0"
-                    />
-                    {rule.conditions.length > 1 ? (
-                      <button
-                        type="button"
-                        onClick={() => removeCondition(rule.id, cond.id)}
-                        className="shrink-0 p-1 text-[#a1a1aa] hover:text-[#dc2626] cursor-pointer transition-colors self-center"
-                        aria-label="Remove condition"
-                      >
-                        <RiDeleteBin6Line size={14} />
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-
-              <div className="flex gap-[6px] items-center">
-                <span className="text-[11px] text-[#71717a] shrink-0 whitespace-nowrap">Then go to</span>
-                <LogicScreenPicker
-                  value={rule.thenScreenId}
-                  onChange={(v) => updateRule(rule.id, { thenScreenId: v })}
-                  options={destinationOptions}
-                  placeholder="Select screen…"
-                  className="flex-1 min-w-0 z-[1]"
-                />
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => addConditionToRule(rule.id)}
-              className="w-full border border-dashed border-[#e4e4e7] rounded-[6px] py-[8px] px-[11px] text-[12px] font-medium text-[#71717a] hover:bg-[#fafaf9] cursor-pointer transition-colors text-center"
+        <AnimatePresence initial={false}>
+          {(draft.rules ?? []).map((rule, ruleIndex) => (
+            <motion.div
+              key={rule.id}
+              layout
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className="flex flex-col gap-[7px]"
             >
-              + Add condition
-            </button>
-          </div>
-        ))}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#a1a1aa]">
+                  RULE {ruleIndex + 1} — CONDITION
+                </p>
+                {(draft.rules ?? []).length > 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => removeRule(rule.id)}
+                    className="shrink-0 p-0.5 text-[#a1a1aa] hover:text-[#dc2626] cursor-pointer transition-colors"
+                    aria-label={`Delete rule ${ruleIndex + 1}`}
+                  >
+                    <RiDeleteBin6Line size={14} />
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="bg-[#f5f5f4] border border-[#e4e4e7] rounded-[6px] px-[11px] pt-[11px] pb-[19px] flex flex-col gap-2 overflow-visible">
+                <AnimatePresence initial={false}>
+                  {rule.conditions.map((cond, condIdx) => (
+                    <motion.div
+                      key={cond.id}
+                      layout
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                      className="flex flex-col gap-1 w-full overflow-hidden"
+                    >
+                      {condIdx > 0 ? (
+                        <span className="text-[10px] font-semibold text-[#a1a1aa] uppercase tracking-wide pl-0.5">
+                          AND
+                        </span>
+                      ) : null}
+                      <div className="flex gap-[6px] items-start flex-wrap">
+                        <LogicFieldPicker
+                          value={conditionPickerValue(cond, questionOptions)}
+                          onChange={(v) => updateCondition(rule.id, cond.id, { fieldId: v })}
+                          options={questionOptions}
+                          className="flex-[1_1_140px] max-w-[180px] z-[1]"
+                        />
+                        <LogicOperatorPicker
+                          value={cond.operator}
+                          onChange={(v) => updateCondition(rule.id, cond.id, { operator: v })}
+                          options={getOperatorsForFieldId(cond.fieldId)}
+                          className="flex-[1_1_100px] max-w-[130px]"
+                        />
+                        <LogicValueInput
+                          screens={screens}
+                          sourceScreenId={cond.sourceScreenId}
+                          fieldId={cond.fieldId}
+                          operator={cond.operator}
+                          value={cond.value}
+                          onChange={(v) => updateCondition(rule.id, cond.id, { value: v })}
+                          className="flex-[1_1_120px] min-w-[100px] max-w-[160px]"
+                        />
+                        {rule.conditions.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => removeCondition(rule.id, cond.id)}
+                            className="shrink-0 p-1 text-[#a1a1aa] hover:text-[#dc2626] cursor-pointer transition-colors self-center"
+                            aria-label="Remove condition"
+                          >
+                            <RiDeleteBin6Line size={14} />
+                          </button>
+                        ) : null}
+                      </div>
+                      {(() => {
+                        const hint = choiceOperatorHint(cond, questionOptions);
+                        return hint ? (
+                          <p className="text-[10px] text-[#71717a] leading-snug pl-0.5">{hint}</p>
+                        ) : null;
+                      })()}
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+
+                <div className="flex gap-[6px] items-center">
+                  <span className="text-[11px] text-[#71717a] shrink-0 whitespace-nowrap">Then go to</span>
+                  <LogicScreenPicker
+                    value={rule.thenScreenId}
+                    onChange={(v) => updateRule(rule.id, { thenScreenId: v })}
+                    options={destinationOptions}
+                    placeholder="Select screen…"
+                    className="flex-1 min-w-0 z-[1]"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => addConditionToRule(rule.id)}
+                className="w-full border border-dashed border-[#e4e4e7] rounded-[6px] py-[8px] px-[11px] text-[12px] font-medium text-[#71717a] hover:bg-[#fafaf9] cursor-pointer transition-colors text-center"
+              >
+                + Add condition
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
 
         <div className="flex flex-col gap-[7px]">
           <p className="text-[10px] font-bold tracking-[0.7px] uppercase text-[#a1a1aa]">ELSE (FALLBACK)</p>
@@ -379,7 +413,9 @@ const IfThenLogicPanel = ({
         </button>
 
         <div className="bg-[#f5f3ff] border border-[#ddd6fe] rounded-[6px] p-[11px] flex flex-col gap-2">
-          <p className="text-[10px] font-bold tracking-[0.6px] uppercase text-[#7c3aed]">LOGIC PREVIEW</p>
+          <p className="text-[10px] font-bold tracking-[0.6px] uppercase text-[#7c3aed]">
+            Summary (not a live test)
+          </p>
           <div className="text-[11.5px] leading-[19.55px] text-[#374151]">
             {previewLines.rules.map((line) => (
               <p key={line.key} className="mb-0">

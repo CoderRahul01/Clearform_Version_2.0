@@ -139,3 +139,28 @@ export function AnalyticsPerformanceEmpty({ onPreview, onShare }) {
     </div>
   );
 }
+
+/**
+ * Lightweight shell used by non-performance analytics tabs while data/UI hydrates.
+ */
+export function AnalyticsPanelSkeleton({ blocks = 3 }) {
+  return (
+    <div className="max-w-[1400px] mx-auto flex flex-col gap-4 animate-pulse">
+      <div className="bg-white border border-[#e8e6e1]/80 rounded-[10px] p-4 flex items-center justify-between gap-3">
+        <SkeletonBar className="h-4 w-[180px]" />
+        <SkeletonBar className="h-8 w-[120px] rounded-[8px]" />
+      </div>
+      {Array.from({ length: blocks }).map((_, idx) => (
+        <div
+          key={idx}
+          className="bg-white border border-[#e8e6e1]/80 rounded-[10px] p-4 flex flex-col gap-3 min-h-[120px]"
+        >
+          <SkeletonBar className="h-3 w-[140px]" />
+          <SkeletonBar className="h-3 w-full" />
+          <SkeletonBar className="h-3 w-[86%]" />
+          <SkeletonBar className="h-3 w-[72%]" />
+        </div>
+      ))}
+    </div>
+  );
+}

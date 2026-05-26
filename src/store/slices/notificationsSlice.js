@@ -1,132 +1,9 @@
 import { createSlice } from '@reduxjs/toolkit';
+import { readNotifications, writeNotifications } from '@/utils/notificationsStorage';
 
 const initialState = {
   activeTab: 'all',
-  notifications: [
-    {
-      id: 'n1',
-      type: 'response_limit',
-      category: 'alerts',
-      dateGroup: 'Today',
-      iconType: 'check',
-      iconBg: '#ddffce',
-      title: 'Response target achieved',
-      titleColor: '#15803d',
-      bodySegments: [
-        { text: 'NPS Survey Q1 2026', bold: true },
-        { text: ' hit its 500 response cap and stopped collecting.', bold: false },
-      ],
-      timestamp: '2h ago',
-      unread: true,
-      action: { label: 'View AI Insights', style: 'dark' },
-    },
-    {
-      id: 'n2',
-      type: 'approaching_limit',
-      category: 'alerts',
-      dateGroup: 'Today',
-      iconType: 'warning',
-      iconBg: '#fef3e2',
-      title: 'Approaching limit',
-      bodySegments: [
-        { text: 'Bug Report Template', bold: true },
-        { text: ' is at ', bold: false },
-        { text: '480 / 500', bold: true },
-        { text: ' responses — 96% full.', bold: false },
-      ],
-      timestamp: '5h ago',
-      unread: true,
-      action: { label: 'View form', style: 'danger' },
-    },
-    {
-      id: 'n3',
-      type: 'new_response',
-      category: 'alerts',
-      dateGroup: 'Today',
-      iconType: 'chat',
-      iconBg: '#e4f7f0',
-      title: 'New response',
-      bodySegments: [
-        { text: 'Someone just submitted ', bold: false },
-        { text: 'Onboarding Feedback', bold: true },
-        { text: '.', bold: false },
-      ],
-      timestamp: '6h ago',
-      unread: true,
-      tag: { label: 'Marketing', color: '#10b981' },
-    },
-    {
-      id: 'n4',
-      type: 'new_response',
-      category: 'alerts',
-      dateGroup: 'Today',
-      iconType: 'chat',
-      iconBg: '#e4f7f0',
-      title: 'New response',
-      bodySegments: [
-        { text: 'Someone just submitted ', bold: false },
-        { text: 'Customer Satisfaction', bold: true },
-        { text: '.', bold: false },
-      ],
-      timestamp: '6h ago',
-      unread: true,
-      tag: { label: 'Marketing', color: '#10b981' },
-    },
-    {
-      id: 'n5',
-      type: 'form_published',
-      category: 'forms',
-      dateGroup: 'Yesterday',
-      iconType: 'emoji',
-      iconEmoji: '🚀',
-      iconBg: '#e4f7f0',
-      title: 'Form published',
-      bodySegments: [
-        { text: 'Exit Interview', bold: true },
-        { text: ' is now live and collecting responses.', bold: false },
-      ],
-      timestamp: '1d ago',
-      unread: false,
-      tag: { label: 'HR', color: '#3b82b6' },
-    },
-    {
-      id: 'n6',
-      type: 'form_shared',
-      category: 'forms',
-      dateGroup: 'Yesterday',
-      iconType: 'emoji',
-      iconEmoji: '🔗',
-      iconBg: '#eee8fd',
-      title: 'Form shared with you',
-      bodySegments: [
-        { text: 'Alex Kim', bold: true },
-        { text: ' shared ', bold: false },
-        { text: 'Q4 Customer Survey', bold: true },
-        { text: ' with you.', bold: false },
-      ],
-      timestamp: '1d ago',
-      unread: false,
-      action: { label: 'Open form', style: 'primary' },
-    },
-    {
-      id: 'n7',
-      type: 'export_ready',
-      category: 'forms',
-      dateGroup: 'Yesterday',
-      iconType: 'emoji',
-      iconEmoji: '📄',
-      iconBg: '#f0edea',
-      title: 'Export ready',
-      bodySegments: [
-        { text: 'Your CSV export for ', bold: false },
-        { text: 'NPS Survey Q4 2025', bold: true },
-        { text: ' is ready to download.', bold: false },
-      ],
-      timestamp: '2d ago',
-      unread: false,
-      action: { label: '⬇ Download', style: 'outline' },
-    },
-  ],
+  notifications: readNotifications(),
 };
 
 const notificationsSlice = createSlice({
@@ -139,11 +16,109 @@ const notificationsSlice = createSlice({
     markNotificationRead(state, action) {
       const item = state.notifications.find((n) => n.id === action.payload);
       if (item) item.unread = false;
+      writeNotifications(state.notifications);
+    },
+    /** Clears the inbox after UI exit animation (not individual mark-read). */
+    clearAllNotifications(state) {
+      state.notifications = [];
+      writeNotifications(state.notifications);
     },
     markAllNotificationsRead(state) {
-      state.notifications.forEach((n) => {
-        n.unread = false;
+      state.notifications = [];
+      writeNotifications(state.notifications);
+    },
+    addNotification(state, action) {
+      const next = { unread: true, dateGroup: 'Today', timestamp: 'Just now', ...action.payload };
+      if (!next.id) next.id = `n-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      state.notifications.unshift(next);
+      writeNotifications(state.notifications);
+    },
+    upsertAlertNotification(state, action) {
+      const { dedupeKey, notification, active } = action.payload;
+      const idx = state.notifications.findIndex((n) => n.dedupeKey === dedupeKey);
+      if (!active) {
+        if (idx >= 0) state.notifications.splice(idx, 1);
+        writeNotifications(state.notifications);
+        return;
+      }
+      const item = {
+        id: dedupeKey,
+        dedupeKey,
+        unread: idx >= 0 ? state.notifications[idx].unread : true,
+        ...notification,
+      };
+      if (idx >= 0) {
+        state.notifications[idx] = { ...state.notifications[idx], ...item };
+      } else {
+        state.notifications.unshift(item);
+      }
+      writeNotifications(state.notifications);
+    },
+    syncFormAlertNotifications(state, action) {
+      const { formId, items } = action.payload;
+      const prefix = `alert:${formId}:`;
+      const activeKeys = new Set(
+        items.filter((i) => i.active && i.notification).map((i) => i.dedupeKey),
+      );
+
+      state.notifications = state.notifications.filter((n) => {
+        if (!n.dedupeKey?.startsWith(prefix)) return true;
+        return activeKeys.has(n.dedupeKey);
       });
+
+      items.forEach(({ dedupeKey, notification, active }) => {
+        if (!active || !notification) return;
+        const idx = state.notifications.findIndex((n) => n.dedupeKey === dedupeKey);
+        const item = {
+          id: dedupeKey,
+          dedupeKey,
+          unread: idx >= 0 ? state.notifications[idx].unread : true,
+          ...notification,
+        };
+        if (idx >= 0) {
+          state.notifications[idx] = { ...state.notifications[idx], ...item };
+        } else {
+          state.notifications.unshift(item);
+        }
+      });
+
+      writeNotifications(state.notifications);
+    },
+    clearNotificationsForForm(state, action) {
+      const formId = action.payload;
+      const prefix = `alert:${formId}:`;
+      state.notifications = state.notifications.filter((n) => !n.dedupeKey?.startsWith(prefix));
+      writeNotifications(state.notifications);
+    },
+    syncSystemAlertNotifications(state, action) {
+      const { items } = action.payload;
+      const prefix = 'system:';
+      const activeKeys = new Set(
+        items.filter((i) => i.active && i.notification).map((i) => i.dedupeKey),
+      );
+
+      state.notifications = state.notifications.filter((n) => {
+        if (!n.dedupeKey?.startsWith(prefix)) return true;
+        return activeKeys.has(n.dedupeKey);
+      });
+
+      items.forEach(({ dedupeKey, notification, active }) => {
+        if (!active || !notification) return;
+        const idx = state.notifications.findIndex((n) => n.dedupeKey === dedupeKey);
+        const item = {
+          id: dedupeKey,
+          dedupeKey,
+          unread: idx >= 0 ? state.notifications[idx].unread : true,
+          ...notification,
+        };
+        if (idx >= 0) {
+          state.notifications[idx] = { ...state.notifications[idx], ...item };
+        } else {
+          state.notifications.unshift(item);
+        }
+      });
+
+      writeNotifications(state.notifications);
     },
   },
 });
@@ -151,7 +126,13 @@ const notificationsSlice = createSlice({
 export const {
   setNotificationTab,
   markNotificationRead,
+  clearAllNotifications,
   markAllNotificationsRead,
+  addNotification,
+  upsertAlertNotification,
+  syncFormAlertNotifications,
+  clearNotificationsForForm,
+  syncSystemAlertNotifications,
 } = notificationsSlice.actions;
 
 export default notificationsSlice.reducer;

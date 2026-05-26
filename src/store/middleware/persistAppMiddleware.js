@@ -1,4 +1,5 @@
 import { writeUserForms } from '@/features/forms/utils/userFormsStorage';
+import { writeAllFormResponses } from '@/features/forms/utils/formResponsesStorage';
 import { writeWorkspaces, syncWorkspaceCounts } from '@/features/forms/utils/workspacesStorage';
 import { writeFormsUi } from '@/features/forms/utils/formsUiStorage';
 
@@ -6,6 +7,7 @@ const FORMS_ACTIONS = new Set([
   'forms/addForm',
   'forms/updateForm',
   'forms/deleteForm',
+  'forms/addFormResponse',
   'forms/archiveForm',
   'forms/unarchiveForm',
   'forms/setFormPause',
@@ -30,6 +32,7 @@ const UI_ACTIONS = new Set([
 
 const persistFormsSlice = (formsState) => {
   writeUserForms(formsState.forms);
+  writeAllFormResponses(formsState.responsesByFormId ?? {});
   writeWorkspaces(syncWorkspaceCounts(formsState.workspaces, formsState.forms));
   writeFormsUi({
     activeFilter: formsState.activeFilter,

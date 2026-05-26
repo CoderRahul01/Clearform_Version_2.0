@@ -3,13 +3,9 @@ import { useDispatch, useSelector } from 'react-redux';
 import { AnimatePresence, motion } from 'motion/react';
 import { RiNotification3Line } from 'react-icons/ri';
 import {
-  openFormOverlay,
   openCreateNewFormModal,
   toggleNotificationCenter,
-  toggleIntegrationsPanel,
 } from '@/store/slices/uiSlice';
-import boxesPlusIcon from '@/assets/Icons/boxes-plus.svg';
-import IntegrationsPanel from '@/features/forms/components/IntegrationsPanel';
 import SearchDropdown from './SearchPalette';
 
 const shimmer = 'relative overflow-hidden before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.5s_infinite] before:bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.6),transparent)]';
@@ -25,8 +21,8 @@ const SearchIcon = () => (
 );
 
 const TITLE_CLASS = {
-  default: 'text-[20px] font-medium text-[#1a1a1c] tracking-[-0.2px] leading-[25px]',
-  sm: 'text-[13px] font-medium text-[#111110] leading-normal',
+  default: 'text-[18px] font-semibold text-[#111110] tracking-[-0.3px] leading-[24px]',
+  sm: 'text-[13px] font-medium text-[#111110] leading-[19.5px]',
 };
 
 const Topbar = ({ title = 'All forms', titleSize = 'default', useFormsLoading = true }) => {
@@ -68,11 +64,6 @@ const Topbar = ({ title = 'All forms', titleSize = 'default', useFormsLoading = 
     return () => window.removeEventListener('keydown', handler);
   }, [isOpen]);
 
-  const handleFormClick = (form) => {
-    close();
-    dispatch(openFormOverlay(form.id));
-  };
-
   const handleCreateNewForm = () => {
     close();
     dispatch(openCreateNewFormModal());
@@ -89,12 +80,9 @@ const Topbar = ({ title = 'All forms', titleSize = 'default', useFormsLoading = 
           transition={{ duration: 0.14 }}
           className="h-[52px] shrink-0 bg-white border-b border-[#e5e3dc] flex items-center justify-between px-6 relative z-10"
         >
-          <Sk className="h-[20px] w-[80px] rounded-[6px]" />
+          <Sk className="h-[20px] w-[88px] rounded-[6px]" />
           <Sk className="h-[38px] w-[400px] rounded-[8px]" />
-          <div className="flex gap-2">
-            <Sk className="h-8 w-8 rounded-[6px]" />
-            <Sk className="h-8 w-8 rounded-[6px]" />
-          </div>
+          <Sk className="h-8 w-8 rounded-[6px]" />
         </motion.header>
       ) : (
         <motion.header
@@ -107,7 +95,7 @@ const Topbar = ({ title = 'All forms', titleSize = 'default', useFormsLoading = 
         >
           {/* Page title */}
           <h1
-            className={`whitespace-nowrap ${TITLE_CLASS[titleSize] ?? TITLE_CLASS.default}`}
+            className={`whitespace-nowrap antialiased ${TITLE_CLASS[titleSize] ?? TITLE_CLASS.default}`}
           >
             {title}
           </h1>
@@ -154,17 +142,8 @@ const Topbar = ({ title = 'All forms', titleSize = 'default', useFormsLoading = 
             </div>
           </div>
 
-          {/* Integrations + notifications */}
+          {/* Notifications */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => dispatch(toggleIntegrationsPanel())}
-              className="flex size-8 items-center justify-center rounded-[6px] border border-[rgba(0,0,0,0.08)] bg-white transition-colors hover:bg-[#f4f3ef] cursor-pointer"
-              aria-label="Toggle integrations"
-            >
-              <img src={boxesPlusIcon} alt="" className="size-[16px]" aria-hidden />
-            </button>
-
             <div className="relative p-0.5">
               <button
                 type="button"
@@ -191,19 +170,16 @@ const Topbar = ({ title = 'All forms', titleSize = 'default', useFormsLoading = 
             </div>
           </div>
 
-          <IntegrationsPanel />
-
           {/* Dropdown — fixed-positioned below the search bar */}
           <SearchDropdown
             open={isOpen}
             query={query}
             anchorRef={containerRef}
             onClose={close}
-            onSelectRecent={(label) => {
+            onQueryChange={(label) => {
               setQuery(label);
               inputRef.current?.focus();
             }}
-            onFormClick={handleFormClick}
             onCreateNewForm={handleCreateNewForm}
           />
         </motion.header>

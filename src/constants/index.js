@@ -11,15 +11,16 @@ export const FILTER_TABS = [
 
 export const WORKSPACES = [
   { id: 'all', label: 'All workspaces', color: null, count: null },
-  { id: 'product', label: 'Product', color: '#3b82f6', count: 2 },
-  { id: 'hr', label: 'HR', color: '#22c55e', count: 1 },
-  { id: 'marketing', label: 'Marketing', color: '#f59e0b', count: 3 },
+  { id: 'product', label: 'Product', color: '#3b82f6' },
+  { id: 'hr', label: 'HR', color: '#22c55e' },
+  { id: 'marketing', label: 'Marketing', color: '#f59e0b' },
 ];
 
+/** @deprecated Use Redux `selectNavWorkspaces` — counts are derived from live forms. */
 export const NAV_WORKSPACES = [
-  { id: 'product', label: 'Product', color: '#3b82f6', count: 2 },
-  { id: 'hr', label: 'HR', color: '#22c55e', count: 1 },
-  { id: 'marketing', label: 'Marketing', color: '#f59e0b', count: 3 },
+  { id: 'product', label: 'Product', color: '#3b82f6' },
+  { id: 'hr', label: 'HR', color: '#22c55e' },
+  { id: 'marketing', label: 'Marketing', color: '#f59e0b' },
 ];
 
 // Dynamic timestamps for paused mock forms (computed at module load time)

@@ -1,6 +1,6 @@
 import { useDispatch, useSelector } from 'react-redux';
 import { motion } from 'motion/react';
-import { setActiveWorkspace } from '@/store/slices/formsSlice';
+import { setActiveWorkspace, selectNavWorkspaces } from '@/store/slices/formsSlice';
 
 const chipEase = [0.25, 0.1, 0.25, 1];
 
@@ -11,7 +11,8 @@ const ALL_CHIP = { id: 'all', label: 'All workspaces', color: null, count: null 
 
 const WorkspaceChips = () => {
   const dispatch = useDispatch();
-  const { activeWorkspace, workspaces, isLoading } = useSelector((state) => state.forms);
+  const { activeWorkspace, isLoading } = useSelector((state) => state.forms);
+  const workspaces = useSelector(selectNavWorkspaces);
   const chips = [ALL_CHIP, ...workspaces];
 
   if (isLoading) {
@@ -55,7 +56,7 @@ const WorkspaceChips = () => {
               />
             )}
             <span>{ws.label}</span>
-            {ws.count !== null && (
+            {ws.count != null && ws.count > 0 && (
               <span className="opacity-60">{ws.count}</span>
             )}
           </motion.button>

@@ -1,15 +1,28 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'motion/react';
 import {
   RiQrCodeLine,
   RiCodeSSlashLine,
   RiFileCopyLine,
   RiMailLine,
   RiShareLine,
+  RiCheckLine,
 } from 'react-icons/ri';
 import Select from '../ui/Select';
 import { useToast } from '../../hooks/useToast';
 import { DeleteFormModal, PauseFormModal } from './AnalyticsFormActionModals';
 import { deleteFormRequest, pauseFormRequest } from './analyticsFormActions';
+import { updateForm, deleteForm, setFormPause } from '@/store/slices/formsSlice';
+import { setConfirmModalOpen } from '@/store/slices/uiSlice';
+import {
+  buildIndefinitePausePayload,
+  isFormPaused,
+} from '@/features/forms/utils/formPause';
+import { DEFAULT_LIFECYCLE_MODE, mergeAlertSettings } from '@/utils/formAlertDefaults';
+import { dispatchSyncFormAlerts } from '@/utils/syncFormAlertsToStore';
+import { clearNotificationsForForm } from '@/store/slices/notificationsSlice';
 
 const LIFECYCLE_OPTIONS = [
   { value: 'No limit', label: 'No limit' },
@@ -91,29 +104,97 @@ const SHARE_ACTIONS = [
   },
 ];
 
+function useDebouncedCallback(fn, delayMs) {
+  const fnRef = useRef(fn);
+  const timerRef = useRef(null);
+  fnRef.current = fn;
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  return useCallback(
+    (...args) => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => fnRef.current(...args), delayMs);
+    },
+    [delayMs],
+  );
+}
+
 function AnalyticsSettingsPanel({ form }) {
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const [copied, setCopied] = useState(false);
-  const [formPaused, setFormPaused] = useState(false);
   const [pauseModalOpen, setPauseModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const abortRef = useRef(null);
 
-  const [name, setName] = useState(form?.title ?? 'NPS Survey Q1 2026');
-  const [target, setTarget] = useState(String(form?.responseLimit ?? 500));
-  const [lifecycle, setLifecycle] = useState('No limit');
-  const [partial, setPartial] = useState(true);
+  const formPaused = isFormPaused(form);
 
-  const [alertCompletion, setAlertCompletion] = useState(true);
-  const [completionPct, setCompletionPct] = useState('10');
-  const [milestone, setMilestone] = useState(true);
-  const [milestoneVal, setMilestoneVal] = useState('500');
-  const [npsAlert, setNpsAlert] = useState(false);
-  const [npsMin, setNpsMin] = useState('50');
-  const [sentimentAlert, setSentimentAlert] = useState(true);
-  const [sentimentPct, setSentimentPct] = useState('25');
-  const [notifyVia, setNotifyVia] = useState('email');
+  const alertSettings = useMemo(
+    () => mergeAlertSettings(form?.alertSettings),
+    [form?.alertSettings],
+  );
+
+  const [name, setName] = useState(form?.title ?? '');
+  const [target, setTarget] = useState(String(form?.responseLimit ?? 500));
+  const [lifecycle, setLifecycle] = useState(form?.lifecycleMode ?? DEFAULT_LIFECYCLE_MODE);
+  const [partial, setPartial] = useState(form?.capturePartialSubmissions ?? true);
+
+  const [completionPct, setCompletionPct] = useState(
+    String(alertSettings.completion.thresholdPct ?? 10),
+  );
+  const [milestoneVal, setMilestoneVal] = useState(String(alertSettings.milestone.value ?? 500));
+  const [sentimentPct, setSentimentPct] = useState(
+    String(alertSettings.sentiment.thresholdPct ?? 1),
+  );
+
+  useEffect(() => {
+    setName(form?.title ?? '');
+    setTarget(String(form?.responseLimit ?? 500));
+    setLifecycle(form?.lifecycleMode ?? DEFAULT_LIFECYCLE_MODE);
+    setPartial(form?.capturePartialSubmissions ?? true);
+    const merged = mergeAlertSettings(form?.alertSettings);
+    setCompletionPct(String(merged.completion.thresholdPct ?? 10));
+    setMilestoneVal(String(merged.milestone.value ?? 500));
+    setSentimentPct(String(merged.sentiment.thresholdPct ?? 1));
+  }, [form?.id, form?.title, form?.responseLimit, form?.lifecycleMode, form?.capturePartialSubmissions, form?.alertSettings]);
+
+  useEffect(() => {
+    dispatch(setConfirmModalOpen(pauseModalOpen || deleteModalOpen));
+    return () => dispatch(setConfirmModalOpen(false));
+  }, [pauseModalOpen, deleteModalOpen, dispatch]);
+
+  useEffect(() => {
+    if (form) dispatchSyncFormAlerts(dispatch, form);
+  }, [form, dispatch]);
+
+  const persistFormChanges = useDebouncedCallback((changes) => {
+    if (!form?.id) return;
+    dispatch(updateForm({ id: form.id, changes }));
+    const nextForm = { ...form, ...changes };
+    dispatchSyncFormAlerts(dispatch, nextForm);
+  }, 300);
+
+  const persistAlertSettings = useDebouncedCallback((nextAlertSettings) => {
+    if (!form?.id) return;
+    dispatch(updateForm({ id: form.id, changes: { alertSettings: nextAlertSettings } }));
+  }, 300);
+
+  const patchAlert = (patch) => {
+    if (!form?.id) return;
+    const next = mergeAlertSettings({ ...alertSettings, ...patch });
+    const nextForm = { ...form, alertSettings: next };
+    dispatch(updateForm({ id: form.id, changes: { alertSettings: next } }));
+    dispatchSyncFormAlerts(dispatch, nextForm);
+    persistAlertSettings(next);
+  };
 
   const slug = useMemo(() => {
     const source = form?.title ?? name;
@@ -150,14 +231,10 @@ function AnalyticsSettingsPanel({ form }) {
     showToast({ type: 'success', message: action.message, duration: 2200 });
   };
 
-  const notifyOptions = [
-    { id: 'email', label: 'Email' },
-    { id: 'in_app', label: 'In-app' },
-  ];
-
-  const displayName = name || form?.title || 'NPS Survey Q1 2026';
+  const displayName = name || form?.title || 'Untitled';
 
   const runPauseForm = useCallback(async () => {
+    if (!form?.id) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -165,16 +242,12 @@ function AnalyticsSettingsPanel({ form }) {
 
     try {
       await pauseFormRequest({ signal: controller.signal });
-      setFormPaused(true);
+      dispatch(setFormPause(buildIndefinitePausePayload(form.id)));
       setPauseModalOpen(false);
       showToast({
         type: 'warning',
         message: 'Form paused successfully',
         duration: 6000,
-        action: {
-          label: 'Undo',
-          onClick: () => setFormPaused(false),
-        },
       });
     } catch (err) {
       if (err?.name === 'AbortError') return;
@@ -187,9 +260,10 @@ function AnalyticsSettingsPanel({ form }) {
     } finally {
       setActionLoading(false);
     }
-  }, [showToast]);
+  }, [dispatch, form?.id, showToast]);
 
   const runDeleteForm = useCallback(async () => {
+    if (!form?.id) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -197,6 +271,8 @@ function AnalyticsSettingsPanel({ form }) {
 
     try {
       await deleteFormRequest({ signal: controller.signal });
+      dispatch(clearNotificationsForForm(form.id));
+      dispatch(deleteForm(form.id));
       setDeleteModalOpen(false);
       showToast({
         type: 'success',
@@ -204,11 +280,10 @@ function AnalyticsSettingsPanel({ form }) {
         duration: 6000,
         action: {
           label: 'View',
-          onClick: () => {
-            window.location.assign('/dashboard');
-          },
+          onClick: () => navigate('/dashboard'),
         },
       });
+      navigate('/dashboard');
     } catch (err) {
       if (err?.name === 'AbortError') return;
       showToast({
@@ -220,11 +295,10 @@ function AnalyticsSettingsPanel({ form }) {
     } finally {
       setActionLoading(false);
     }
-  }, [showToast]);
+  }, [dispatch, form?.id, navigate, showToast]);
 
   return (
     <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-10 pt-2 lg:flex-row lg:items-start lg:gap-16">
-      {/* Left — settings (Figma ~470px) */}
       <div className="w-full shrink-0 lg:w-[470px]">
         <section className="border-t border-[#e9e7e0] pt-4">
           <SectionHeading>General</SectionHeading>
@@ -235,7 +309,11 @@ function AnalyticsSettingsPanel({ form }) {
               control={
                 <input
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setName(v);
+                    persistFormChanges({ title: v.trim() || 'Untitled' });
+                  }}
                   className={`${inputBase} h-8 min-w-[180px] max-w-[220px]`}
                 />
               }
@@ -246,7 +324,12 @@ function AnalyticsSettingsPanel({ form }) {
               control={
                 <input
                   value={target}
-                  onChange={(e) => setTarget(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setTarget(v);
+                    const n = Math.max(1, parseInt(v, 10) || 1);
+                    persistFormChanges({ responseLimit: n });
+                  }}
                   type="number"
                   min={1}
                   className={`${inputBase} h-8 w-20 text-center`}
@@ -259,7 +342,10 @@ function AnalyticsSettingsPanel({ form }) {
               control={
                 <Select
                   value={lifecycle}
-                  onValueChange={setLifecycle}
+                  onValueChange={(v) => {
+                    setLifecycle(v);
+                    persistFormChanges({ lifecycleMode: v });
+                  }}
                   options={LIFECYCLE_OPTIONS}
                   triggerClassName="h-8 min-w-[160px]"
                   aria-label="Form lifecycle"
@@ -269,13 +355,24 @@ function AnalyticsSettingsPanel({ form }) {
             <SettingRow
               label="Capture partial submissions"
               description="Save responses from people who started but didn&apos;t submit"
-              control={<Toggle checked={partial} onChange={setPartial} />}
+              control={
+                <Toggle
+                  checked={partial}
+                  onChange={(v) => {
+                    setPartial(v);
+                    persistFormChanges({ capturePartialSubmissions: v });
+                  }}
+                />
+              }
             />
           </div>
         </section>
 
         <section className="mt-10 border-t border-[#e9e7e0] pt-4">
           <SectionHeading>Alert rules</SectionHeading>
+          <p className="mb-3 text-[11px] leading-[16px] text-[#8e8c86]">
+            Active alerts appear in your notification center when conditions are met.
+          </p>
           <div>
             <SettingRow
               label="Completion rate drops below"
@@ -284,12 +381,26 @@ function AnalyticsSettingsPanel({ form }) {
                 <div className="flex items-center gap-2">
                   <input
                     value={completionPct}
-                    onChange={(e) => setCompletionPct(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCompletionPct(v);
+                      patchAlert({
+                        completion: {
+                          ...alertSettings.completion,
+                          thresholdPct: Number(v) || 10,
+                        },
+                      });
+                    }}
                     className={`${inputBase} h-8 w-20 text-center`}
                   />
                   <span className="text-[13px] text-[#6a6860]">%</span>
                   <div className="pl-2">
-                    <Toggle checked={alertCompletion} onChange={setAlertCompletion} />
+                    <Toggle
+                      checked={alertSettings.completion.enabled}
+                      onChange={(enabled) =>
+                        patchAlert({ completion: { ...alertSettings.completion, enabled } })
+                      }
+                    />
                   </div>
                 </div>
               }
@@ -301,28 +412,25 @@ function AnalyticsSettingsPanel({ form }) {
                 <div className="flex items-center gap-2">
                   <input
                     value={milestoneVal}
-                    onChange={(e) => setMilestoneVal(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setMilestoneVal(v);
+                      patchAlert({
+                        milestone: {
+                          ...alertSettings.milestone,
+                          value: Number(v) || 500,
+                        },
+                      });
+                    }}
                     className={`${inputBase} h-8 w-20 text-center`}
                   />
                   <div className="pl-2">
-                    <Toggle checked={milestone} onChange={setMilestone} />
-                  </div>
-                </div>
-              }
-            />
-            <SettingRow
-              label="NPS score drops below"
-              description="Alert when NPS score falls below your minimum acceptable level"
-              control={
-                <div className="flex items-center gap-2">
-                  <input
-                    value={npsMin}
-                    onChange={(e) => setNpsMin(e.target.value)}
-                    className={`${inputBase} h-8 w-20 text-center ${!npsAlert ? 'opacity-50' : ''}`}
-                    disabled={!npsAlert}
-                  />
-                  <div className="pl-2">
-                    <Toggle checked={npsAlert} onChange={setNpsAlert} />
+                    <Toggle
+                      checked={alertSettings.milestone.enabled}
+                      onChange={(enabled) =>
+                        patchAlert({ milestone: { ...alertSettings.milestone, enabled } })
+                      }
+                    />
                   </div>
                 </div>
               }
@@ -334,38 +442,27 @@ function AnalyticsSettingsPanel({ form }) {
                 <div className="flex items-center gap-2">
                   <input
                     value={sentimentPct}
-                    onChange={(e) => setSentimentPct(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setSentimentPct(v);
+                      patchAlert({
+                        sentiment: {
+                          ...alertSettings.sentiment,
+                          thresholdPct: Number(v) || 1,
+                        },
+                      });
+                    }}
                     className={`${inputBase} h-8 w-20 text-center`}
                   />
                   <span className="text-[13px] text-[#6a6860]">%</span>
                   <div className="pl-2">
-                    <Toggle checked={sentimentAlert} onChange={setSentimentAlert} />
+                    <Toggle
+                      checked={alertSettings.sentiment.enabled}
+                      onChange={(enabled) =>
+                        patchAlert({ sentiment: { ...alertSettings.sentiment, enabled } })
+                      }
+                    />
                   </div>
-                </div>
-              }
-            />
-            <SettingRow
-              label="Notify via"
-              description="Where to send alert notifications"
-              control={
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {notifyOptions.map(({ id, label: lbl }) => {
-                    const active = notifyVia === id;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => setNotifyVia(id)}
-                        className={`h-[26px] rounded-full px-3 text-[11px] font-medium transition-colors ${
-                          active
-                            ? 'border border-[#17160e] bg-[#17160e] text-white'
-                            : 'border border-[#8e8c86] bg-transparent font-normal text-[#646464] hover:bg-[#fafaf8]'
-                        }`}
-                      >
-                        {lbl}
-                      </button>
-                    );
-                  })}
                 </div>
               }
             />
@@ -417,61 +514,67 @@ function AnalyticsSettingsPanel({ form }) {
         </section>
       </div>
 
-      {/* Right — share & embed (Figma ~300px) */}
-      <aside className="w-full shrink-0 lg:sticky lg:top-28 lg:w-[300px]">
+      <aside className="w-full shrink-0 lg:sticky lg:top-28 lg:w-[320px]">
         <SectionHeading>Share &amp; embed</SectionHeading>
-        <div className="mt-3 overflow-hidden rounded-[10px] border border-[#e8e6e1] bg-white p-[17px] shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <div className="flex items-start gap-2.5 border-b border-[#f0ede6] bg-[#fafaf8] -mx-[17px] -mt-[17px] mb-4 px-4 py-3.5">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-[#eaf5ee]">
-              <RiShareLine size={15} className="text-[#2ea44f]" aria-hidden />
+        <div className="mt-3 overflow-hidden rounded-[12px] border border-[#e8e6e1] bg-white shadow-[0_4px_20px_rgba(15,23,42,0.06)]">
+          <div className="flex items-start gap-3 border-b border-[#f0ede6] bg-gradient-to-b from-[#fafaf8] to-white px-4 py-4">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-[#eaf5ee] shadow-sm">
+              <RiShareLine size={16} className="text-[#2ea44f]" aria-hidden />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-medium leading-snug text-[#17160e]">Public link</p>
-              <p className="mt-0.5 text-[11.5px] leading-[17px] text-[#646464]">
+              <p className="text-[14px] font-semibold leading-snug text-[#17160e]">Public link</p>
+              <p className="mt-1 text-[12px] leading-[17px] text-[#646464]">
                 Anyone with the link can fill out this form.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 rounded-[10px] border border-[#e9e7e0] bg-[#f7f6f2] py-1 pl-3 pr-1">
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#646464]" title={fullUrl}>
-              {formUrl}
-            </span>
-            <button
-              type="button"
-              onClick={copyLink}
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                copied
-                  ? 'bg-[#2ea44f] text-white'
-                  : 'bg-[#17160e] text-white hover:bg-[#2c2a27]'
-              }`}
-            >
-              <RiFileCopyLine size={13} aria-hidden />
-              {copied ? 'Copied' : 'Copy link'}
-            </button>
-          </div>
-          <p className="mt-4 text-[10px] font-semibold uppercase tracking-[0.85px] text-[#a8a6a0]">
-            More ways to share
-          </p>
-          <div className="mt-2.5 grid grid-cols-3 gap-2">
-            {SHARE_ACTIONS.map(({ id, label, bg, iconColor, Icon, message }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => handleShareAction({ id, message })}
-                className="group flex flex-col items-center gap-1.5 rounded-[10px] border border-transparent py-2 transition-colors hover:border-[#e9e7e0] hover:bg-[#fafaf8]"
+
+          <div className="p-4 flex flex-col gap-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <span
+                className="min-w-0 flex-1 truncate rounded-[10px] border border-[#e9e7e0] bg-[#fafaf8] px-3 py-2 font-mono text-[11px] text-[#646464]"
+                title={fullUrl}
               >
-                <span
-                  className="flex size-11 items-center justify-center rounded-[10px] transition-opacity group-hover:opacity-85"
-                  style={{ backgroundColor: bg }}
+                {formUrl}
+              </span>
+              <motion.button
+                type="button"
+                onClick={copyLink}
+                whileTap={{ scale: 0.97 }}
+                className={`inline-flex w-full sm:w-auto shrink-0 items-center justify-center gap-1.5 rounded-[10px] px-3 py-2 text-[12px] font-medium transition-colors ${
+                  copied
+                    ? 'bg-[#2ea44f] text-white'
+                    : 'bg-[#17160e] text-white hover:bg-[#2c2a27]'
+                }`}
+              >
+                {copied ? <RiCheckLine size={14} aria-hidden /> : <RiFileCopyLine size={14} aria-hidden />}
+                {copied ? 'Copied' : 'Copy link'}
+              </motion.button>
+            </div>
+
+            <p className="text-[10px] font-semibold uppercase tracking-[0.85px] text-[#a8a6a0] pt-1">
+              More ways to share
+            </p>
+            <div className="grid grid-cols-3 gap-2.5">
+              {SHARE_ACTIONS.map(({ id, label, bg, iconColor, Icon, message }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => handleShareAction({ id, message })}
+                  className="group flex flex-col items-center gap-2 rounded-[12px] border border-[#f0ede6] bg-[#fafaf8] py-3 transition-all hover:border-[#e0ddd7] hover:bg-white hover:shadow-sm"
                 >
-                  <Icon size={20} color={iconColor} aria-hidden />
-                </span>
-                <span className="text-[10.5px] font-medium text-[#4e4e4e]">{label}</span>
-              </button>
-            ))}
+                  <span
+                    className="flex size-11 items-center justify-center rounded-[10px] transition-transform group-hover:scale-[1.03]"
+                    style={{ backgroundColor: bg }}
+                  >
+                    <Icon size={20} color={iconColor} aria-hidden />
+                  </span>
+                  <span className="text-[10.5px] font-medium text-[#4e4e4e]">{label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-
       </aside>
 
       <PauseFormModal

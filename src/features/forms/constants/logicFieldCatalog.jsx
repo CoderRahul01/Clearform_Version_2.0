@@ -81,7 +81,6 @@ export const SCREEN_LOGIC_FIELD_IDS = {
   Rating: ['rating', 'opinion-scale', 'ranking'],
   Date: ['date'],
   Time: ['number', 'date'],
-  Maps: ['address'],
   Upload: ['file-upload'],
   'Multi-image upload': ['file-upload', 'picture-choice'],
   Heading: ['short-text'],
@@ -136,7 +135,6 @@ export const getLogicFieldLabelForScreen = (screen, field) => {
     Contact: field.label,
     Address: 'Address',
     'Work Info': field.label,
-    Maps: 'Location',
     Upload: 'File upload',
     'Multi-image upload': 'File upload',
     Date: 'Selected date',
@@ -267,24 +265,66 @@ export const BLOCK_VISIBILITY_LABELS = new Set([
   'Images',
   'Media',
   'Captcha',
-  'Maps',
 ]);
 
-/** Content screens that support if/then branching (choice-based, interactive, numeric). */
+/**
+ * Content screens that support If/Else flow branching on the logic canvas.
+ * Excludes file uploads, captcha, and display-only blocks — those use Next/Skip/End only.
+ */
 export const IF_THEN_LOGIC_SCREEN_LABELS = new Set([
+  /* Choice-based */
   'Single',
   'Multiple',
   'Media',
-  'Maps',
-  'Upload',
-  'Multi-image upload',
-  'Captcha',
+  'Images',
+  /* Numeric / date */
   'Rating',
-  'Time',
   'Date',
+  'Time',
+  /* Text & structured answers */
+  'Short text',
+  'Long text',
+  'Contact',
+  'Address',
+  'Work Info',
 ]);
 
 export const screenSupportsIfThenLogic = (screen) => {
   if (!screen || screen.type !== 'content') return false;
   return IF_THEN_LOGIC_SCREEN_LABELS.has(screen.label);
 };
+
+export const isChoiceLogicFieldId = (fieldId) =>
+  fieldId === 'multiple-choice' || fieldId === 'picture-choice';
+
+/** Choice labels from persisted screen config (Single / Multiple / Media). */
+export function getLogicChoiceOptionsForScreen(screen) {
+  if (!screen) return [];
+  const config = screen.config ?? {};
+  switch (screen.label) {
+    case 'Single':
+      return Array.isArray(config.singleOptions)
+        ? config.singleOptions.map(String).filter(Boolean)
+        : [];
+    case 'Multiple':
+      return Array.isArray(config.multipleOptions)
+        ? config.multipleOptions.map(String).filter(Boolean)
+        : [];
+    case 'Media':
+    case 'Images': {
+      const opts = config.mediaOptions ?? [];
+      return opts
+        .map((o) => (typeof o === 'string' ? o : o?.label ?? ''))
+        .map(String)
+        .filter(Boolean);
+    }
+    default:
+      return [];
+  }
+}
+
+export function getLogicChoiceOptionsForCondition(screens, sourceScreenId, fieldId) {
+  if (!isChoiceLogicFieldId(fieldId)) return [];
+  const screen = screens?.find((s) => Number(s.id) === Number(sourceScreenId));
+  return getLogicChoiceOptionsForScreen(screen);
+}

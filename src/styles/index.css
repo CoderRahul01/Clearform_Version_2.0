@@ -53,8 +53,80 @@ button[role="switch"] {
   }
 }
 
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+@keyframes select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes select-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+.animate-select-in {
+  animation: select-in 0.16s cubic-bezier(0.25, 0.1, 0.25, 1);
+  transform-origin: top center;
+}
+
+.animate-select-out {
+  animation: select-out 0.12s cubic-bezier(0.25, 0.1, 0.25, 1);
+  transform-origin: top center;
+}
+
+.animate-accordion-down {
+  animation: accordion-down 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.animate-accordion-up {
+  animation: accordion-up 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 .logic-connect-drag-path {
   animation: logic-connect-dash-flow 0.55s linear infinite;
+}
+
+@keyframes logic-card-highlight-pulse {
+  0%,
+  100% {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 0 0 0 rgba(124, 58, 237, 0.35);
+  }
+  50% {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 0 0 4px rgba(124, 58, 237, 0.2);
+  }
+}
+
+.logic-card-sidebar-highlight {
+  animation: logic-card-highlight-pulse 1.4s ease-in-out 2;
 }
 
 .label-marquee {

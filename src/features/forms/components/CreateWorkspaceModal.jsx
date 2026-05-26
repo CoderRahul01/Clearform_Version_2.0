@@ -49,19 +49,23 @@ const CreateWorkspaceModal = () => {
             className="fixed inset-0 z-[300] bg-black/20"
           />
 
-          {/* Dialog + hint wrapper */}
-          <div className="fixed z-[301] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-3">
-            <motion.div
+          <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-workspace-title"
               initial={{ opacity: 0, scale: 0.96, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: 8 }}
               transition={{ duration: 0.18, ease: [0.25, 0.1, 0.25, 1] }}
-              className="bg-white rounded-[16px] shadow-[0_24px_64px_rgba(0,0,0,0.18)] w-[400px] p-6 flex flex-col gap-5"
+              className="fixed z-[301] top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-[16px] shadow-[0_24px_64px_rgba(0,0,0,0.18)] w-[400px] p-6 flex flex-col gap-5"
             >
               {/* Header */}
               <div className="flex items-start justify-between">
                 <div className="flex flex-col gap-0.5">
-                  <h2 className="text-[15px] font-semibold text-[#1a1a1c] leading-[22px] tracking-[-0.2px]">
+                  <h2
+                    id="create-workspace-title"
+                    className="text-[15px] font-semibold text-[#1a1a1c] leading-[22px] tracking-[-0.2px]"
+                  >
                     Create new workspace
                   </h2>
                   <p className="text-[13px] text-[#6b6966] leading-[19px]">
@@ -113,6 +117,10 @@ const CreateWorkspaceModal = () => {
                 </div>
               </div>
 
+              <p className="text-[12px] text-[#6b6966] leading-[18px]">
+                After creating, you&apos;ll land on this workspace&apos;s empty dashboard.
+              </p>
+
               {/* Actions */}
               <div className="flex items-center justify-between pt-1">
                 <button
@@ -131,18 +139,6 @@ const CreateWorkspaceModal = () => {
                 </button>
               </div>
             </motion.div>
-
-            {/* Hint below card */}
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, delay: 0.1 }}
-              className="text-[12px] text-[#6b6966] leading-[18px]"
-            >
-              → Redirects to empty workspace dashboard
-            </motion.p>
-          </div>
         </>
       )}
     </AnimatePresence>

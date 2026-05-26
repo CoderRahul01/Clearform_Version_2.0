@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { FcGoogle } from 'react-icons/fc';
-import { RiGlobalLine, RiArrowDownSLine, RiAppleFill, RiEyeLine, RiEyeOffLine } from 'react-icons/ri';
+import { RiGlobalLine, RiArrowDownSLine, RiEyeLine, RiEyeOffLine } from 'react-icons/ri';
 import { setField, setSubmitting, loginSuccess } from '@/store/slices/authSlice';
 import { resolveSignupNavigation } from '@/features/onboarding/utils/authOnboarding';
 import {
@@ -289,9 +289,6 @@ const SignupPage = () => {
             <div className="flex items-center justify-center gap-3 py-0.5">
               <SocialButton label="Continue with Google"><FcGoogle size={22} /></SocialButton>
               <SocialButton label="Continue with Microsoft"><MicrosoftIcon /></SocialButton>
-              <SocialButton label="Continue with Apple">
-                <RiAppleFill size={22} className="text-[#0f0f0e]" />
-              </SocialButton>
             </div>
 
             {/* CTA */}

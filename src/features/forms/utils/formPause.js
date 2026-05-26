@@ -35,3 +35,19 @@ export function buildOneDayPausePayload(formId, now = Date.now()) {
     ampm: endDate.getHours() >= 12 ? 'PM' : 'AM',
   };
 }
+
+/** Pause until manually resumed (analytics danger zone). */
+export function buildIndefinitePausePayload(formId) {
+  return {
+    formId,
+    endLabel: 'Until resumed',
+    endTimestamp: null,
+    pauseType: 'indefinite',
+    viewYear: null,
+    viewMonth: null,
+    selDay: null,
+    hour: null,
+    minute: null,
+    ampm: null,
+  };
+}

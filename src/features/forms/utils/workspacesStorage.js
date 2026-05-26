@@ -15,9 +15,19 @@ export const clearWorkspaces = () => {
   removeKey(WORKSPACES_KEY);
 };
 
+/** Forms included in sidebar / workspace badges (archived forms are excluded). */
+export const countNavForms = (forms, { workspaceId } = {}) =>
+  forms.filter((f) => {
+    if (f.status === 'archived') return false;
+    if (workspaceId != null && workspaceId !== 'all') {
+      return f.workspace === workspaceId;
+    }
+    return true;
+  }).length;
+
 /** Recompute per-workspace form counts from the current forms list. */
 export const syncWorkspaceCounts = (workspaces, forms) =>
   workspaces.map((ws) => ({
     ...ws,
-    count: forms.filter((f) => f.workspace === ws.id).length,
+    count: countNavForms(forms, { workspaceId: ws.id }),
   }));

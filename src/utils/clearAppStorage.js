@@ -1,6 +1,7 @@
 import { clearAuthSession } from '@/features/auth/utils/authStorage';
 import { clearUserForms } from '@/features/forms/utils/userFormsStorage';
 import { clearWorkspaces } from '@/features/forms/utils/workspacesStorage';
+import { clearFormResponses } from '@/features/forms/utils/formResponsesStorage';
 import { clearFormsUi } from '@/features/forms/utils/formsUiStorage';
 import { writeOnboardingComplete, writeOnboardingSession } from '@/features/onboarding/utils/onboardingStorage';
 import { removeKey } from '@/utils/localStorageSafe';
@@ -9,6 +10,7 @@ import { removeKey } from '@/utils/localStorageSafe';
 export const clearAllAppStorage = () => {
   clearAuthSession();
   clearUserForms();
+  clearFormResponses();
   clearWorkspaces();
   clearFormsUi();
   writeOnboardingComplete(false);

@@ -88,14 +88,6 @@ export function buildLogicAnswersFromScreen(screen, snap) {
     }
   }
 
-  if (label === 'Maps') {
-    const sel = snap.mapSelection;
-    answers.address = (sel?.address ?? pf('map.address')).trim();
-    if (sel?.lat != null && sel?.lng != null) {
-      answers['short-text'] = `${sel.lat},${sel.lng}`;
-    }
-  }
-
   if (label === 'Video') {
     answers['video-audio'] = pf('videoAns');
   }
@@ -391,6 +383,23 @@ export function isNumericFieldId(fieldId) {
   return getOperatorsForFieldId(fieldId).some((o) => o.id === 'gt');
 }
 
+const VALUE_REQUIRED_OPERATORS = new Set([
+  'eq',
+  'neq',
+  'gt',
+  'lt',
+  'gte',
+  'lte',
+  'contains',
+  'not_contains',
+  'includes',
+  'not_includes',
+]);
+
+export function conditionRequiresValue(operator) {
+  return VALUE_REQUIRED_OPERATORS.has(operator);
+}
+
 export function validateIfThenDraft(draft, destinationOptions) {
   const errors = [];
   const destIds = new Set(destinationOptions.map((d) => Number(d.id)));
@@ -407,7 +416,7 @@ export function validateIfThenDraft(draft, destinationOptions) {
       if (!c.fieldId) errors.push(`Rule ${i + 1}, condition ${j + 1}: choose a question.`);
       const emptyVal = c.value === '' || c.value == null;
       const noValueOp = c.operator === 'is_empty' || c.operator === 'is_not_empty';
-      if (!noValueOp && emptyVal && isNumericFieldId(c.fieldId)) {
+      if (!noValueOp && emptyVal && conditionRequiresValue(c.operator)) {
         errors.push(`Rule ${i + 1}, condition ${j + 1}: enter a value.`);
       }
     });

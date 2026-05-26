@@ -10,12 +10,15 @@ import {
   RiBarChartLine,
   RiDownloadLine,
   RiPauseLine,
+  RiPlayLine,
   RiArchiveLine,
   RiDeleteBinLine,
 } from 'react-icons/ri';
 import { closeContextMenu, openDeleteModal, openDuplicateModal, openArchiveModal, openPauseModal, openShareModal, openCompareMode } from '@/store/slices/uiSlice';
+import { clearFormPause } from '@/store/slices/formsSlice';
 import { isFormPaused } from '../utils/formPause';
-import { FORM_BUILDER_PATH, getFormBuilderState } from '../utils/formBuilderNavigation';
+import { getFormBuilderState } from '../utils/formBuilderNavigation';
+import { navigateToFormBuilder } from '../utils/navigateToFormBuilder';
 
 const MENU_ITEMS = [
   { id: 'view', icon: RiEyeLine, label: 'View responses' },
@@ -72,15 +75,16 @@ const FormContextMenu = () => {
     } else if (itemId === 'edit') {
       const builderState = getFormBuilderState(form);
       if (builderState) {
-        navigate(FORM_BUILDER_PATH, { state: builderState });
+        navigateToFormBuilder(navigate, dispatch, builderState);
       }
       dispatch(closeContextMenu());
     } else if (itemId === 'pause') {
-      if (!isFormPaused(form)) {
-        dispatch(openPauseModal({ formId, formTitle: form?.title ?? '' }));
+      if (isFormPaused(form)) {
+        dispatch(clearFormPause(formId));
       } else {
-        dispatch(closeContextMenu());
+        dispatch(openPauseModal({ formId, formTitle: form?.title ?? '' }));
       }
+      dispatch(closeContextMenu());
     } else {
       dispatch(closeContextMenu());
     }
@@ -103,26 +107,24 @@ const FormContextMenu = () => {
           className="fixed z-[200] bg-white border border-[#e5e3dc] rounded-[12px] shadow-[0_8px_32px_rgba(0,0,0,0.12)] py-1.5 w-[196px]"
         >
           {MENU_ITEMS.map((item, i) => {
-            const Icon = item.icon;
+            const formPaused = item.id === 'pause' && isFormPaused(form);
+            const Icon = formPaused ? RiPlayLine : item.icon;
+            const label = formPaused ? 'Resume form' : item.label;
             const isDelete = item.danger;
-            const isPauseDisabled = item.id === 'pause' && isFormPaused(form);
             const showDivider = i === MENU_ITEMS.length - 2;
             return (
               <div key={item.id}>
                 {showDivider && <div className="h-px bg-[#e5e3dc] mx-2 my-1" />}
                 <button
                   onClick={() => handleItem(item.id)}
-                  disabled={isPauseDisabled}
                   className={`w-full flex items-center gap-3 px-3.5 py-[7px] text-[13px] font-medium leading-[19.5px] transition-colors ${
-                    isPauseDisabled
-                      ? 'text-[#c4c2bc] cursor-not-allowed'
-                      : isDelete
-                        ? 'text-[#d4522a] hover:bg-[#f4f3ef] cursor-pointer'
-                        : 'text-[#1a1a1c] hover:bg-[#f4f3ef] cursor-pointer'
+                    isDelete
+                      ? 'text-[#d4522a] hover:bg-[#f4f3ef] cursor-pointer'
+                      : 'text-[#1a1a1c] hover:bg-[#f4f3ef] cursor-pointer'
                   }`}
                 >
-                  <Icon size={14} className={isDelete ? 'text-[#d4522a]' : isPauseDisabled ? 'text-[#c4c2bc]' : 'text-[#6b6966]'} />
-                  {isPauseDisabled ? 'Form paused' : item.label}
+                  <Icon size={14} className={isDelete ? 'text-[#d4522a]' : 'text-[#6b6966]'} />
+                  {label}
                 </button>
               </div>
             );

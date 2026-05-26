@@ -1,4 +1,13 @@
 import { useEffect, useRef } from 'react';
+import { useDashboardHydration } from '@/hooks/useDashboardHydration';
+import {
+  DASHBOARD_CONTENT_MOTION,
+  DASHBOARD_HEADING_MOTION,
+  DASHBOARD_LIST_MOTION,
+  DASHBOARD_PAGE_EASE,
+  DASHBOARD_SECTION_MOTION,
+  dashboardGridItemTransition,
+} from '@/motion/dashboardMotion';
 import { useDispatch, useSelector } from 'react-redux';
 import { openCreateNewFormModal } from '@/store/slices/uiSlice';
 import { motion, AnimatePresence } from 'motion/react';
@@ -16,31 +25,17 @@ import FormCard from '../components/FormCard';
 import FormListRow from '../components/FormListRow';
 import { SkeletonGrid, SkeletonList } from '../components/SkeletonCard';
 import Topbar from '@/components/layout/Topbar';
-import FormContextMenu from '../components/FormContextMenu';
-import DeleteFormModal from '../components/DeleteFormModal';
-import DuplicateFormModal from '../components/DuplicateFormModal';
-import ArchiveFormModal from '../components/ArchiveFormModal';
-import PauseFormModal from '../components/PauseFormModal';
-import FormOverlayModal from '../components/FormOverlayModal';
 import NewWorkspaceEmpty from '../components/NewWorkspaceEmpty';
-import CreateWorkspaceModal from '../components/CreateWorkspaceModal';
-import ShareFormModal from '../components/ShareFormModal';
-import WorkspaceContextMenu from '../components/WorkspaceContextMenu';
-import RenameWorkspaceModal from '../components/RenameWorkspaceModal';
-import DeleteWorkspaceModal from '../components/DeleteWorkspaceModal';
-import NotificationCenter from '../components/NotificationCenter';
-import CompareModeDock from '../components/CompareModeDock';
 import { useToast } from '@/hooks/useToast';
+import { dispatchSyncFormAlerts } from '@/utils/syncFormAlertsToStore';
 
 /* ── Empty state: no forms from filter ── */
-const pageEase = [0.25, 0.1, 0.25, 1];
-
 const FilterEmptyState = ({ hasFilters, onClearFilters, onNewForm }) => (
   <motion.div
     initial={{ opacity: 0, y: 8 }}
     animate={{ opacity: 1, y: 0 }}
     exit={{ opacity: 0, y: 6 }}
-    transition={{ duration: 0.22, ease: pageEase }}
+    transition={{ duration: 0.3, ease: DASHBOARD_PAGE_EASE }}
     className="flex flex-col items-center justify-center py-16 gap-4"
   >
     <div className="w-14 h-14 bg-[#f4f3ef] border border-[#e5e3dc] rounded-[12px] flex items-center justify-center">
@@ -80,7 +75,7 @@ const ListView = ({ forms }) => (
     initial={{ opacity: 0, y: 6 }}
     animate={{ opacity: 1, y: 0 }}
     exit={{ opacity: 0 }}
-    transition={{ duration: 0.2, ease: pageEase }}
+    transition={DASHBOARD_LIST_MOTION.transition}
     className="bg-white border border-[#e5e3dc] rounded-[12px] overflow-hidden mt-4"
   >
     <div className="bg-[#f4f3ef] border-b border-[#e5e3dc] grid grid-cols-[2fr_1fr_1fr_1fr_40px] gap-4 px-4 py-2 items-center">
@@ -106,7 +101,7 @@ const GridView = ({ forms }) => (
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: 0.2, delay: index * 0.04, ease: pageEase }}
+        transition={dashboardGridItemTransition(index)}
       >
         <FormCard form={form} />
       </motion.div>
@@ -143,11 +138,16 @@ const AllFormsPage = () => {
   );
   const isNewWorkspace = activeWorkspace !== 'all' && selectedWorkspaceForms.length === 0;
 
-  /* Simulate initial 1.2s data load */
+  const hydrationReady = useDashboardHydration();
+
   useEffect(() => {
-    const t = setTimeout(() => dispatch(setLoading(false)), 1200);
-    return () => clearTimeout(t);
-  }, [dispatch]);
+    dispatch(setLoading(!hydrationReady));
+  }, [hydrationReady, dispatch]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    allForms.forEach((f) => dispatchSyncFormAlerts(dispatch, f));
+  }, [allForms, isLoading, dispatch]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -180,20 +180,6 @@ const AllFormsPage = () => {
 
   return (
     <>
-      {/* ── Global overlay components ── */}
-      <FormContextMenu />
-      <DeleteFormModal />
-      <DuplicateFormModal />
-      <ArchiveFormModal />
-      <PauseFormModal />
-      <FormOverlayModal />
-      <CreateWorkspaceModal />
-      <ShareFormModal />
-      <WorkspaceContextMenu />
-      <RenameWorkspaceModal />
-      <DeleteWorkspaceModal />
-      <NotificationCenter />
-      <CompareModeDock />
       <div className="flex flex-col h-full overflow-hidden relative">
         <Topbar />
         {/* Page heading + CTA */}
@@ -210,9 +196,9 @@ const AllFormsPage = () => {
             <motion.div
               key="page-heading-loaded"
               className="flex items-end justify-between w-full"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.24, ease: pageEase, delay: 0.04 }}
+              initial={DASHBOARD_HEADING_MOTION.initial}
+              animate={DASHBOARD_HEADING_MOTION.animate}
+              transition={DASHBOARD_HEADING_MOTION.transition}
             >
               <div>
                 <h2 className="text-[30px] font-semibold text-[#111110] leading-[36px] tracking-[-0.3px]">
@@ -222,55 +208,74 @@ const AllFormsPage = () => {
                   Start with a template or create a form from scratch
                 </p>
               </div>
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
+              <button
+                type="button"
                 onClick={openNewFormModal}
                 className="flex items-center gap-2 bg-[#1a1a1c] text-white text-[14px] font-medium px-[17px] py-[9px] rounded-lg border border-[#1a1a1c] hover:bg-[#2c2c2e] transition-colors cursor-pointer shrink-0"
               >
                 <RiAddLine size={14} />
                 New Form
-              </motion.button>
+              </button>
             </motion.div>
           )}
         </div>
 
-        {/* Template banner */}
-        <TemplateBanner visible={showTemplateBanner} isLoading={isLoading} />
-
-        {/* Filter tabs + controls */}
-        <FilterTabs />
-
-        {/* Divider */}
-        <div className="px-6">
-          <div className="h-px bg-[#e5e3dc]" />
-        </div>
-
-        {/* Workspace chips */}
-        <WorkspaceChips />
+        {!isLoading ? (
+          <motion.div
+            key="dashboard-chrome"
+            initial={DASHBOARD_SECTION_MOTION.initial}
+            animate={DASHBOARD_SECTION_MOTION.animate}
+            transition={{ ...DASHBOARD_SECTION_MOTION.transition, delay: 0.08 }}
+          >
+            <TemplateBanner visible={showTemplateBanner} isLoading={false} />
+            <FilterTabs />
+            <div className="px-6">
+              <div className="h-px bg-[#e5e3dc]" />
+            </div>
+            <WorkspaceChips />
+          </motion.div>
+        ) : (
+          <>
+            <TemplateBanner visible={showTemplateBanner} isLoading />
+            <FilterTabs />
+            <div className="px-6">
+              <div className="h-px bg-[#e5e3dc]" />
+            </div>
+            <WorkspaceChips />
+          </>
+        )}
 
         {/* Content area — extra bottom padding when compare dock is visible */}
         <div className={`flex-1 overflow-y-auto px-6 transition-all duration-300 ${compareModeActive ? 'pb-28' : 'pb-8'}`}>
           <AnimatePresence mode="wait">
             {isLoading ? (
-              <motion.div key="skeleton" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <motion.div
+                key="skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.28, ease: DASHBOARD_PAGE_EASE } }}
+              >
                 {viewMode === 'grid' ? <SkeletonGrid count={6} /> : <SkeletonList count={6} />}
               </motion.div>
             ) : isNewWorkspace ? (
+              <motion.div key="new-workspace" {...DASHBOARD_CONTENT_MOTION}>
               /* ── New workspace: never had any forms ── */
-              <NewWorkspaceEmpty key="new-workspace" workspaceName={workspaceName} />
+                <NewWorkspaceEmpty workspaceName={workspaceName} />
+              </motion.div>
             ) : filteredForms.length === 0 ? (
-              /* ── Filter returned nothing ── */
-              <FilterEmptyState
-                key="empty"
-                hasFilters={hasActiveFilters}
-                onClearFilters={handleClearFilters}
-                onNewForm={openNewFormModal}
-              />
+              <motion.div key="empty" {...DASHBOARD_CONTENT_MOTION}>
+                <FilterEmptyState
+                  hasFilters={hasActiveFilters}
+                  onClearFilters={handleClearFilters}
+                  onNewForm={openNewFormModal}
+                />
+              </motion.div>
             ) : viewMode === 'list' ? (
               <ListView key="list" forms={filteredForms} />
             ) : (
-              <GridView key="grid" forms={filteredForms} />
+              <motion.div key="grid" {...DASHBOARD_CONTENT_MOTION}>
+                <GridView forms={filteredForms} />
+              </motion.div>
             )}
           </AnimatePresence>
         </div>

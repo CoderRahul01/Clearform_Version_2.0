@@ -12,6 +12,7 @@ const initialState = {
     open: false,
     formId: null,
     formTitle: '',
+    redirectAfterDelete: false,
   },
   duplicateModal: {
     open: false,
@@ -41,6 +42,9 @@ const initialState = {
   },
   createNewFormModal: {
     open: false,
+  },
+  builderRouteTransition: {
+    pending: false,
   },
   shareModal: {
     open: false,
@@ -73,6 +77,9 @@ const initialState = {
     active: false,
     selectedFormIds: [],
   },
+  confirmModal: {
+    open: false,
+  },
 };
 
 const uiSlice = createSlice({
@@ -87,12 +94,12 @@ const uiSlice = createSlice({
       state.contextMenu = { open: false, formId: null, x: 0, y: 0 };
     },
     openDeleteModal(state, action) {
-      const { formId, formTitle } = action.payload;
-      state.deleteModal = { open: true, formId, formTitle };
+      const { formId, formTitle, redirectAfterDelete = false } = action.payload;
+      state.deleteModal = { open: true, formId, formTitle, redirectAfterDelete };
       state.contextMenu = { open: false, formId: null, x: 0, y: 0 };
     },
     closeDeleteModal(state) {
-      state.deleteModal = { open: false, formId: null, formTitle: '' };
+      state.deleteModal = { open: false, formId: null, formTitle: '', redirectAfterDelete: false };
     },
     openDuplicateModal(state, action) {
       const { formId, formTitle } = action.payload;
@@ -141,6 +148,12 @@ const uiSlice = createSlice({
     },
     closeCreateNewFormModal(state) {
       state.createNewFormModal.open = false;
+    },
+    startBuilderRouteTransition(state) {
+      state.builderRouteTransition.pending = true;
+    },
+    finishBuilderRouteTransition(state) {
+      state.builderRouteTransition.pending = false;
     },
     openShareModal(state, action) {
       const { formId, formTitle } = action.payload;
@@ -227,6 +240,9 @@ const uiSlice = createSlice({
     deactivateCompareModeKeepSelection(state) {
       state.compareMode.active = false;
     },
+    setConfirmModalOpen(state, action) {
+      state.confirmModal.open = Boolean(action.payload);
+    },
   },
 });
 
@@ -245,6 +261,8 @@ export const {
   closeCreateWorkspaceModal,
   openCreateNewFormModal,
   closeCreateNewFormModal,
+  startBuilderRouteTransition,
+  finishBuilderRouteTransition,
   openArchiveModal,
   closeArchiveModal,
   openPauseModal,
@@ -267,6 +285,7 @@ export const {
   clearCompareSelection,
   openAnalyticsComparePicker,
   deactivateCompareModeKeepSelection,
+  setConfirmModalOpen,
 } = uiSlice.actions;
 
 export default uiSlice.reducer;

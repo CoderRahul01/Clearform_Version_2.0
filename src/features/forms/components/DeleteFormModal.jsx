@@ -1,17 +1,25 @@
 import { useDispatch, useSelector } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { FiTrash2, FiAlertTriangle } from 'react-icons/fi';
 import { closeDeleteModal } from '@/store/slices/uiSlice';
 import { deleteForm } from '@/store/slices/formsSlice';
+import { useToast } from '@/hooks/useToast';
 
 const DeleteFormModal = () => {
   const dispatch = useDispatch();
-  const { open, formId, formTitle } = useSelector((s) => s.ui.deleteModal);
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+  const { open, formId, formTitle, redirectAfterDelete } = useSelector((s) => s.ui.deleteModal);
   const form = useSelector((s) => s.forms.forms.find((f) => f.id === formId));
 
   const handleDelete = () => {
     if (formId) dispatch(deleteForm(formId));
     dispatch(closeDeleteModal());
+    if (redirectAfterDelete) {
+      showToast({ type: 'success', message: 'Form deleted' });
+      navigate('/dashboard');
+    }
   };
 
   const responseCount = form?.responses ?? 0;
