@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import { completeOnboarding } from '@/store/slices/onboardingSlice';
 import { motion, AnimatePresence } from 'motion/react';
 import { premiumTransition } from '@/constants/premiumTransition';
 import {
@@ -881,11 +882,13 @@ const FormPublishView = ({
   formTitle = 'Untitled Form',
   formId = null,
   showOnboardingStepper = true,
+  fromOnboarding = false,
   publishFailed = false,
   onRetryPublish,
   onSaveAsDraft,
 }) => {
   const navigate = useNavigate();
+  const dispatch = useDispatch();
   const { showToast } = useToast();
   const form = useSelector((s) =>
     formId != null ? s.forms.forms.find((f) => f.id === formId) : null,
@@ -987,7 +990,12 @@ const FormPublishView = ({
     link.click();
   }, [formSlug, qrImageUrl]);
 
-  const handleHome = useCallback(() => navigate('/dashboard'), [navigate]);
+  const handleHome = useCallback(() => {
+    if (fromOnboarding) {
+      dispatch(completeOnboarding());
+    }
+    navigate('/dashboard');
+  }, [navigate, fromOnboarding, dispatch]);
 
   const handleRetry = useCallback(() => {
     if (onRetryPublish) {

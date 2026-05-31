@@ -21,14 +21,18 @@ import AnalyticsPage from '@/pages/AnalyticsPage';
 import OnboardingLayout from '@/features/onboarding/layouts/OnboardingLayout';
 import OnboardingWelcomePage from '@/features/onboarding/pages/OnboardingWelcomePage';
 import OnboardingChooseTemplatePage from '@/features/onboarding/pages/OnboardingChooseTemplatePage';
+import NotFoundPage from '@/pages/NotFoundPage';
 import RequireAuth from './RequireAuth';
 import GuestOnly from './GuestOnly';
+import PageTitle from '@/components/layout/PageTitle';
 
 const AppRoutes = () => {
   const location = useLocation();
   const transitionKey = getRouteTransitionKey(location.pathname);
 
   return (
+    <>
+    <PageTitle />
     <AnimatePresence mode="wait" initial={false}>
       <Routes location={location} key={transitionKey}>
         <Route
@@ -151,8 +155,11 @@ const AppRoutes = () => {
             </RouteTransitionShell>
           }
         />
+
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AnimatePresence>
+    </>
   );
 };
 

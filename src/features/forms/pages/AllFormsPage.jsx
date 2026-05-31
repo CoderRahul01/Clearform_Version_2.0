@@ -259,7 +259,6 @@ const AllFormsPage = () => {
               </motion.div>
             ) : isNewWorkspace ? (
               <motion.div key="new-workspace" {...DASHBOARD_CONTENT_MOTION}>
-              /* ── New workspace: never had any forms ── */
                 <NewWorkspaceEmpty workspaceName={workspaceName} />
               </motion.div>
             ) : filteredForms.length === 0 ? (

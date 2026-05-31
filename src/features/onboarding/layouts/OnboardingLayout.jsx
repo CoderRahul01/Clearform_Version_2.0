@@ -35,7 +35,7 @@ const OnboardingLayout = () => {
     prevPathRef.current = location.pathname;
   }, [location.pathname]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     dispatch(resumeOnboardingIfNeeded());
     if (!completed) {
       dispatch(enterOnboardingFlow());

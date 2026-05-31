@@ -13,6 +13,7 @@
     "test:smoke": "node e2e/smoke.spec.mjs",
     "test:configure-live-update": "node e2e/configure-panel-live-update.spec.mjs",
     "test:published": "node e2e/published-form.spec.mjs",
+    "audit:handoff": "node scripts/audit-handoff.mjs",
     "audit:panels": "node scripts/audit-right-panels-imports.mjs"
   },
   "dependencies": {

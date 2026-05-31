@@ -1,6 +1,6 @@
 import { useState, useCallback, memo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { FcGoogle } from 'react-icons/fc';
 import { RiGlobalLine, RiArrowDownSLine, RiEyeLine, RiEyeOffLine } from 'react-icons/ri';
@@ -148,6 +148,7 @@ const LeftPanel = memo(() => {
 const SignInPage = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const location = useLocation();
   const { showToast } = useToast();
   const { email, password, isSubmitting } = useSelector((state) => state.auth);
   const [errors, setErrors] = useState({});
@@ -191,9 +192,11 @@ const SignInPage = () => {
         })
       );
       showToast({ type: 'success', message: 'Signed in successfully', duration: 3000 });
-      navigate(resolveSignInNavigation(dispatch));
+      navigate(resolveSignInNavigation(dispatch, { returnTo: location.state?.from }), {
+        replace: true,
+      });
     }, 1000);
-  }, [dispatch, navigate, email, password, showToast]);
+  }, [dispatch, navigate, location.state, email, password, showToast]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white">

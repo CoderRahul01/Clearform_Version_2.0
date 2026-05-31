@@ -142,6 +142,8 @@ import {
   resetAiLogicGeneration,
   runAiLogicGeneration,
 } from '@/features/forms/utils/aiLogicGeneration';
+import { logicService } from '@/api';
+import { isApiConfigured } from '@/config/env';
 import { getSuggestedFlowLogic } from '@/features/forms/utils/logicCardDefaults';
 import {
   buildLogicAnswersFromScreen,
@@ -1128,7 +1130,7 @@ const PREVIEW_PAGE_INDICATOR_H = 34;
 const PREVIEW_POWERED_BY_H = 38;
 const PREVIEW_CHROME_H = PREVIEW_PAGE_INDICATOR_H + PREVIEW_POWERED_BY_H;
 
-/** Page counter shown above the form card in preview � Figma 2521:8332 */
+/** Page counter shown above the form card in preview — Figma 2521:8332 */
 const PreviewPageIndicator = ({ current, total }) => (
   <motion.div
     layout
@@ -1145,7 +1147,7 @@ const PreviewPageIndicator = ({ current, total }) => (
   </motion.div>
 );
 
-/** Clearform branding shown below the form card in preview � Figma 2521:8332 */
+/** Clearform branding shown below the form card in preview — Figma 2521:8332 */
 const PreviewPoweredBy = () => (
   <motion.div
     layout
@@ -2792,13 +2794,25 @@ const FormBuilderPage = () => {
   const handleAiLogicRetry = useCallback(() => {
     patchAiLogicGen({ status: AI_LOGIC_GEN_STATUS.generating, errorMessage: '' });
     showToast({ type: 'info', message: 'Retrying AI logic generation…' });
-    runAiLogicGeneration(aiLogicGenerationContext, patchAiLogicGen, applyAiLogicToBuilder);
-  }, [patchAiLogicGen, aiLogicGenerationContext, applyAiLogicToBuilder, showToast]);
+    const fetchAiLogic =
+      isApiConfigured() && activeFormId
+        ? () => logicService.generateFormLogic(activeFormId, aiLogicGenerationContext)
+        : undefined;
+    runAiLogicGeneration(aiLogicGenerationContext, patchAiLogicGen, applyAiLogicToBuilder, {
+      fetchAiLogic,
+    });
+  }, [patchAiLogicGen, aiLogicGenerationContext, applyAiLogicToBuilder, showToast, activeFormId]);
   const handleGenerateAiLogic = useCallback(() => {
     patchAiLogicGen({ status: AI_LOGIC_GEN_STATUS.generating, errorMessage: '' });
     showToast({ type: 'info', message: 'Generating AI logic from your form…' });
-    runAiLogicGeneration(aiLogicGenerationContext, patchAiLogicGen, applyAiLogicToBuilder);
-  }, [patchAiLogicGen, aiLogicGenerationContext, applyAiLogicToBuilder, showToast]);
+    const fetchAiLogic =
+      isApiConfigured() && activeFormId
+        ? () => logicService.generateFormLogic(activeFormId, aiLogicGenerationContext)
+        : undefined;
+    runAiLogicGeneration(aiLogicGenerationContext, patchAiLogicGen, applyAiLogicToBuilder, {
+      fetchAiLogic,
+    });
+  }, [patchAiLogicGen, aiLogicGenerationContext, applyAiLogicToBuilder, showToast, activeFormId]);
   const aiLogicGenerationFailed = aiLogicGen.status === AI_LOGIC_GEN_STATUS.failed;
   const aiLogicGenerating = aiLogicGen.status === AI_LOGIC_GEN_STATUS.generating;
   const aiLogicReady = aiLogicGen.status === AI_LOGIC_GEN_STATUS.success;
@@ -5204,6 +5218,7 @@ const FormBuilderPage = () => {
         formTitle={publishFormTitle}
         formId={activeFormId}
         showOnboardingStepper={showOnboardingStepper}
+        fromOnboarding={fromOnboarding}
         onRetryPublish={handlePublishForm}
         onSaveAsDraft={() => setIsPublishView(false)}
       />
@@ -6914,7 +6929,7 @@ const FormBuilderPage = () => {
               className="flex-1 overflow-hidden relative flex items-center justify-center transition-colors duration-300 p-10 min-h-0"
               style={{ backgroundColor: isPreview ? '#f5f4f0' : builderTheme.canvasBackground }}
             >
-              {/* Scaled form frame � page indicator + card + powered-by (Figma 2521:8332) */}
+              {/* Scaled form frame — page indicator + card + powered-by (Figma 2521:8332) */}
               <div
                 className="flex flex-col shrink-0 origin-center"
                 style={{

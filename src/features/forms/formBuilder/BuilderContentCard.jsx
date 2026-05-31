@@ -111,12 +111,12 @@ const accentButtonStyle = (accent) => ({
   backgroundColor: accent || DEFAULT_ACCENT,
 });
 
-/** Preview viewport chrome heights � Figma Clearform-Changes 2521:8332 */
+/** Preview viewport chrome heights — Figma Clearform-Changes 2521:8332 */
 const PREVIEW_PAGE_INDICATOR_H = 34;
 const PREVIEW_POWERED_BY_H = 38;
 const PREVIEW_CHROME_H = PREVIEW_PAGE_INDICATOR_H + PREVIEW_POWERED_BY_H;
 
-/** Page counter shown above the form card in preview � Figma 2521:8332 */
+/** Page counter shown above the form card in preview — Figma 2521:8332 */
 export const PreviewPageIndicator = ({ current, total }) => (
   <motion.div
     layout
@@ -133,7 +133,7 @@ export const PreviewPageIndicator = ({ current, total }) => (
   </motion.div>
 );
 
-/** Clearform branding shown below the form card in preview � Figma 2521:8332 */
+/** Clearform branding shown below the form card in preview — Figma 2521:8332 */
 export const PreviewPoweredBy = () => (
   <motion.div
     layout
@@ -411,7 +411,7 @@ const FileUploadCard = ({ blockNum, onDelete, onConfigure, configureLabel, confi
               <p className="text-[24px] leading-[36px] opacity-50 text-[#141412]">&#9888;</p>
               <p className="text-[#e8271c] text-[13px] font-medium leading-[19.5px] pt-[6px]">File too large</p>
               <p className="text-[#9a9a94] text-[11.5px] text-center leading-[17.25px]">
-                {sizeError.name} is {formatFileSizeCompact(sizeError.size)} � max allowed is{' '}
+                {sizeError.name} is {formatFileSizeCompact(sizeError.size)} — max allowed is{' '}
                 {formatMaxSizeLabel(maxFileSizeLabel)}
               </p>
             </div>
@@ -843,7 +843,7 @@ const MultiImageUploadCard = ({
               <p className="text-[24px] leading-[36px] opacity-50 text-[#141412]">&#9888;</p>
               <p className="text-[#e8271c] text-[13px] font-medium leading-[19.5px] pt-[6px]">File too large</p>
               <p className="text-[#9a9a94] text-[11.5px] text-center leading-[17.25px]">
-                {sizeError.name} is {formatFileSizeCompact(sizeError.size)} � max allowed is{' '}
+                {sizeError.name} is {formatFileSizeCompact(sizeError.size)} — max allowed is{' '}
                 {formatMaxSizeLabel(maxFileSizeLabel)}
               </p>
             </div>

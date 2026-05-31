@@ -34,3 +34,12 @@ export async function generateAiInsights(formId, { range } = {}) {
     body: { range },
   });
 }
+
+export async function fetchCompareAnalytics(formId, { range } = {}) {
+  if (!isApiConfigured()) {
+    return { formId, range: range ?? 'all', source: 'client-demo' };
+  }
+  return apiClient(API_ENDPOINTS.analytics.compare(formId), {
+    query: range ? { range } : undefined,
+  });
+}

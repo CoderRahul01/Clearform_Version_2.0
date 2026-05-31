@@ -41,6 +41,10 @@ export const API_ENDPOINTS = {
   logic: {
     generate: (formId) => `/forms/${formId}/logic/generate`,
   },
+  responseQuality: {
+    evaluate: (formId) => `/forms/${formId}/response-quality/evaluate`,
+    analytics: (formId) => `/analytics/forms/${formId}/response-quality`,
+  },
   notifications: {
     list: '/notifications',
   },
